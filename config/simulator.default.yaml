@@ -3,22 +3,144 @@
   "producer": {
     "producer_id": "simulator-local",
     "schema_version": "1.0",
-    "seed": 42
+    "seed": 42,
+    "dry_run": false,
+    "linger_ms": 40,
+    "batch_size": 32768,
+    "compression_type": "gzip",
+    "acks": "1",
+    "request_timeout_ms": 10000
   },
-  "simulation": {
-    "station_count": 50,
-    "connectors_per_station": 4,
-    "event_rate_per_second": 25,
-    "session_start_probability": 0.08
+  "network": {
+    "station_count": 120,
+    "connector_count_distribution": {
+      "1": 0.15,
+      "2": 0.35,
+      "3": 0.35,
+      "4": 0.15
+    },
+    "operator_distribution": [
+      {
+        "operator_id": "operator-north",
+        "weight": 0.42
+      },
+      {
+        "operator_id": "operator-south",
+        "weight": 0.33
+      },
+      {
+        "operator_id": "operator-west",
+        "weight": 0.25
+      }
+    ],
+    "geography_distribution": [
+      {
+        "city": "Seattle",
+        "country": "US",
+        "latitude": 47.6062,
+        "longitude": -122.3321,
+        "weight": 0.14
+      },
+      {
+        "city": "San Francisco",
+        "country": "US",
+        "latitude": 37.7749,
+        "longitude": -122.4194,
+        "weight": 0.17
+      },
+      {
+        "city": "Los Angeles",
+        "country": "US",
+        "latitude": 34.0522,
+        "longitude": -118.2437,
+        "weight": 0.18
+      },
+      {
+        "city": "Dallas",
+        "country": "US",
+        "latitude": 32.7767,
+        "longitude": -96.797,
+        "weight": 0.16
+      },
+      {
+        "city": "Chicago",
+        "country": "US",
+        "latitude": 41.8781,
+        "longitude": -87.6298,
+        "weight": 0.17
+      },
+      {
+        "city": "New York",
+        "country": "US",
+        "latitude": 40.7128,
+        "longitude": -74.006,
+        "weight": 0.18
+      }
+    ],
+    "vehicle_brand_distribution": {
+      "Tesla": 0.28,
+      "Ford": 0.16,
+      "BMW": 0.14,
+      "Hyundai": 0.16,
+      "Rivian": 0.1,
+      "Nissan": 0.16
+    },
+    "heartbeat_interval_seconds": 45,
+    "target_event_rate": 90,
+    "tick_interval_seconds": 1.0
   },
-  "peak_hour": {
-    "enabled": true,
-    "start_hour": 17,
-    "end_hour": 21,
-    "demand_multiplier": 1.8
+  "demand": {
+    "base_session_start_rate_per_idle_connector_minute": 0.09,
+    "hourly_weights": [
+      0.35,
+      0.32,
+      0.3,
+      0.3,
+      0.34,
+      0.48,
+      0.72,
+      0.95,
+      1.05,
+      0.92,
+      0.84,
+      0.82,
+      0.86,
+      0.9,
+      0.96,
+      1.06,
+      1.2,
+      1.36,
+      1.5,
+      1.42,
+      1.2,
+      0.92,
+      0.68,
+      0.48
+    ],
+    "morning_peak": {
+      "start_hour": 7,
+      "end_hour": 10,
+      "multiplier": 1.7
+    },
+    "evening_peak": {
+      "start_hour": 17,
+      "end_hour": 21,
+      "multiplier": 2.0
+    }
+  },
+  "session": {
+    "min_duration_minutes": 18,
+    "mode_duration_minutes": 42,
+    "max_duration_minutes": 180,
+    "meter_update_interval_seconds_min": 8,
+    "meter_update_interval_seconds_max": 22,
+    "target_soc_percent_min": 78,
+    "target_soc_percent_max": 94
   },
   "faults": {
-    "fault_rate": 0.01,
+    "fault_rate_per_connector_hour": 0.0025,
+    "recovery_seconds_min": 300,
+    "recovery_seconds_max": 2400,
     "severity_weights": {
       "low": 0.7,
       "medium": 0.2,
@@ -26,14 +148,18 @@
     }
   },
   "data_quality": {
-    "duplicate_injection_rate": 0.003,
-    "out_of_order_injection_rate": 0.02,
-    "late_event_injection_rate": 0.01,
-    "too_late_threshold_seconds": 300
+    "duplicate_injection_rate": 0.002,
+    "out_of_order_injection_rate": 0.008,
+    "too_late_injection_rate": 0.004,
+    "too_late_threshold_seconds": 900,
+    "out_of_order_delay_seconds_min": 0.8,
+    "out_of_order_delay_seconds_max": 4.0
   },
   "benchmark": {
     "enabled": false,
     "sustained_mode": false,
-    "burst_mode": false
+    "burst_mode": false,
+    "burst_multiplier": 1.5,
+    "burst_cycle_seconds": 90
   }
 }

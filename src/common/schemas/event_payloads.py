@@ -13,6 +13,9 @@ class SessionStartPayload:
     initial_meter_kwh: float
     auth_method: str | None = None
     vehicle_id: str | None = None
+    vehicle_brand: str | None = None
+    soc_start_percent: float | None = None
+    target_soc_percent: float | None = None
 
 
 @dataclass(slots=True)
@@ -20,6 +23,9 @@ class MeterUpdatePayload:
     meter_kwh: float
     energy_delta_kwh: float
     power_kw: float | None = None
+    soc_percent: float | None = None
+    voltage_v: float | None = None
+    current_a: float | None = None
 
 
 @dataclass(slots=True)
@@ -34,12 +40,17 @@ class SessionStopPayload:
     final_meter_kwh: float
     end_reason: str
     duration_seconds: int | None = None
+    total_energy_kwh: float | None = None
+    final_soc_percent: float | None = None
+    vehicle_brand: str | None = None
 
 
 @dataclass(slots=True)
 class HeartbeatPayload:
     charger_status: str
     firmware_version: str | None = None
+    active_session_count: int | None = None
+    faulted_connector_count: int | None = None
 
 
 @dataclass(slots=True)
@@ -47,6 +58,7 @@ class FaultAlertPayload:
     fault_code: str
     severity: str
     message: str | None = None
+    recoverable: bool | None = None
 
 
 PayloadModel = Union[

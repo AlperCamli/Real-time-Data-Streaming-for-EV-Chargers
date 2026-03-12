@@ -3,39 +3,163 @@
   "producer": {
     "producer_id": "simulator-benchmark",
     "schema_version": "1.0",
-    "seed": 7
+    "seed": 7,
+    "dry_run": false,
+    "linger_ms": 25,
+    "batch_size": 65536,
+    "compression_type": "gzip",
+    "acks": "1",
+    "request_timeout_ms": 12000
   },
-  "simulation": {
-    "station_count": 400,
-    "connectors_per_station": 6,
-    "event_rate_per_second": 500,
-    "session_start_probability": 0.12
+  "network": {
+    "station_count": 420,
+    "connector_count_distribution": {
+      "1": 0.05,
+      "2": 0.2,
+      "3": 0.35,
+      "4": 0.4
+    },
+    "operator_distribution": [
+      {
+        "operator_id": "operator-north",
+        "weight": 0.4
+      },
+      {
+        "operator_id": "operator-south",
+        "weight": 0.35
+      },
+      {
+        "operator_id": "operator-west",
+        "weight": 0.25
+      }
+    ],
+    "geography_distribution": [
+      {
+        "city": "Seattle",
+        "country": "US",
+        "latitude": 47.6062,
+        "longitude": -122.3321,
+        "weight": 0.12
+      },
+      {
+        "city": "San Francisco",
+        "country": "US",
+        "latitude": 37.7749,
+        "longitude": -122.4194,
+        "weight": 0.16
+      },
+      {
+        "city": "Los Angeles",
+        "country": "US",
+        "latitude": 34.0522,
+        "longitude": -118.2437,
+        "weight": 0.2
+      },
+      {
+        "city": "Dallas",
+        "country": "US",
+        "latitude": 32.7767,
+        "longitude": -96.797,
+        "weight": 0.14
+      },
+      {
+        "city": "Chicago",
+        "country": "US",
+        "latitude": 41.8781,
+        "longitude": -87.6298,
+        "weight": 0.18
+      },
+      {
+        "city": "New York",
+        "country": "US",
+        "latitude": 40.7128,
+        "longitude": -74.006,
+        "weight": 0.2
+      }
+    ],
+    "vehicle_brand_distribution": {
+      "Tesla": 0.3,
+      "Ford": 0.16,
+      "BMW": 0.12,
+      "Hyundai": 0.16,
+      "Rivian": 0.11,
+      "Nissan": 0.15
+    },
+    "heartbeat_interval_seconds": 25,
+    "target_event_rate": 260,
+    "tick_interval_seconds": 0.5
   },
-  "peak_hour": {
-    "enabled": true,
-    "start_hour": 18,
-    "end_hour": 22,
-    "demand_multiplier": 2.5
+  "demand": {
+    "base_session_start_rate_per_idle_connector_minute": 0.14,
+    "hourly_weights": [
+      0.38,
+      0.35,
+      0.34,
+      0.34,
+      0.38,
+      0.56,
+      0.88,
+      1.12,
+      1.24,
+      1.04,
+      0.94,
+      0.9,
+      0.92,
+      0.98,
+      1.06,
+      1.2,
+      1.42,
+      1.62,
+      1.74,
+      1.58,
+      1.32,
+      1.02,
+      0.78,
+      0.56
+    ],
+    "morning_peak": {
+      "start_hour": 7,
+      "end_hour": 10,
+      "multiplier": 1.85
+    },
+    "evening_peak": {
+      "start_hour": 17,
+      "end_hour": 22,
+      "multiplier": 2.2
+    }
+  },
+  "session": {
+    "min_duration_minutes": 15,
+    "mode_duration_minutes": 38,
+    "max_duration_minutes": 160,
+    "meter_update_interval_seconds_min": 5,
+    "meter_update_interval_seconds_max": 14,
+    "target_soc_percent_min": 76,
+    "target_soc_percent_max": 96
   },
   "faults": {
-    "fault_rate": 0.02,
+    "fault_rate_per_connector_hour": 0.004,
+    "recovery_seconds_min": 180,
+    "recovery_seconds_max": 1200,
     "severity_weights": {
-      "low": 0.6,
+      "low": 0.62,
       "medium": 0.25,
-      "high": 0.15
+      "high": 0.13
     }
   },
   "data_quality": {
-    "duplicate_injection_rate": 0.01,
-    "out_of_order_injection_rate": 0.05,
-    "late_event_injection_rate": 0.04,
-    "too_late_threshold_seconds": 180
+    "duplicate_injection_rate": 0.006,
+    "out_of_order_injection_rate": 0.02,
+    "too_late_injection_rate": 0.01,
+    "too_late_threshold_seconds": 600,
+    "out_of_order_delay_seconds_min": 0.6,
+    "out_of_order_delay_seconds_max": 3.0
   },
   "benchmark": {
     "enabled": true,
     "sustained_mode": true,
     "burst_mode": true,
-    "burst_multiplier": 1.7,
-    "target_duration_minutes": 30
+    "burst_multiplier": 1.6,
+    "burst_cycle_seconds": 75
   }
 }

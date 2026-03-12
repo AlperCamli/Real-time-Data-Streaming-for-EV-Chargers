@@ -94,9 +94,15 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
 3. Start optional observability:
    - `docker compose --profile observability up -d prometheus grafana`
 
-## Foundation Entry Points
-- Simulator placeholder:
+## Python Dependencies
+- `pip install kafka-python`
+- Optional for YAML-native config files: `pip install pyyaml`
+
+## Service Entry Points
+- Simulator:
   - `python -m src.simulator.main --config config/simulator.default.yaml`
+  - smoke test: `python -m src.simulator.main --config config/simulator.default.yaml --max-runtime-seconds 20`
+  - benchmark profile: `python -m src.simulator.main --config config/simulator.benchmark.yaml`
 - Processor placeholder:
   - `python -m src.processor.main --config config/processor.default.yaml`
 
@@ -107,12 +113,17 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
 - Validation scaffolding (required fields, event type, timestamp parsing, semantic hooks)
 - Docker Compose platform foundation
 - ClickHouse DDL placeholders for all frozen tables
-- Simulator benchmark/default config scaffolding
-- Minimal service boot entrypoints
+- Simulator implementation with:
+  - modular station/connector/session domain model
+  - configurable network generation (100+ stations, 1-4 connector distribution, operator/location/brand weights)
+  - realistic lifecycle generation (`SESSION_START -> METER_UPDATE* -> SESSION_STOP`)
+  - heartbeat and low-frequency fault behavior
+  - duplicate/out-of-order/too-late injection hooks
+  - Kafka publishing to `cs.ev.events.raw` with batching and structured error logging
+  - internal metrics hooks for throughput, event counts, faults, injections, failures, active sessions
 
 ## Deferred To Later Phases
-- Full simulator behavior and lifecycle generation
-- Kafka producer/consumer runtime logic
+- Processor consumer/runtime logic
 - Dedup, late-event, and stateful processing implementation
 - Session reconstruction and aggregate materialization jobs
 - Dashboard implementation and benchmark reporting
