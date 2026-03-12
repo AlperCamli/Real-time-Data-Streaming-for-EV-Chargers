@@ -38,11 +38,12 @@ class KafkaEventProducer:
             ) from exc
 
         compression_type = config.compression_type if config.compression_type else None
+        acks = _normalize_acks(config.acks)
         self._producer = KafkaProducer(
             bootstrap_servers=bootstrap_servers,
             linger_ms=config.linger_ms,
             batch_size=config.batch_size,
-            acks=config.acks,
+            acks=acks,
             retries=3,
             compression_type=compression_type,
             request_timeout_ms=config.request_timeout_ms,
@@ -75,14 +76,26 @@ class KafkaEventProducer:
                     },
                 )
 
-        self._producer.flush(timeout=self._request_timeout_seconds)
+        try:
+            self._producer.flush(timeout=self._request_timeout_seconds)
+        except Exception as exc:  # noqa: BLE001
+            failures = max(failures, len(events))
+            self._logger.error(
+                "simulator_publish_flush_failed",
+                extra={"error": str(exc), "attempted_events": len(events)},
+            )
         return failures
 
     def close(self) -> None:
         try:
             self._producer.flush(timeout=5.0)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("simulator_producer_flush_on_close_failed", extra={"error": str(exc)})
         finally:
-            self._producer.close(timeout=5.0)
+            try:
+                self._producer.close(timeout=5.0)
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning("simulator_producer_close_failed", extra={"error": str(exc)})
 
 
 class DryRunEventProducer:
@@ -126,3 +139,15 @@ def build_event_producer(
 
 def _serialize_event(value: dict[str, Any]) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+
+def _normalize_acks(value: int | str) -> int | str:
+    if isinstance(value, int):
+        return value
+    raw = str(value).strip().lower()
+    if raw in {"all", "-1"}:
+        return "all"
+    try:
+        return int(raw)
+    except ValueError:
+        return 1

@@ -133,7 +133,7 @@ def load_service_settings(service_name: str) -> ServiceSettings:
             host=_env("CLICKHOUSE_HOST", "localhost"),
             port=_env_int("CLICKHOUSE_PORT", 9000),
             user=_env("CLICKHOUSE_USER", "default"),
-            password=_env("CLICKHOUSE_PASSWORD", ""),
+            password=_env("CLICKHOUSE_PASSWORD", "password"),
             database=_env("CLICKHOUSE_DATABASE", "default"),
         ),
     )

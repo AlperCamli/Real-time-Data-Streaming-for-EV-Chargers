@@ -43,7 +43,7 @@ class ProducerConfig:
     linger_ms: int
     batch_size: int
     compression_type: str | None
-    acks: str
+    acks: int | str
     request_timeout_ms: int
 
 
@@ -270,7 +270,7 @@ def build_simulator_config(raw: Mapping[str, Any]) -> SimulatorConfig:
             linger_ms=max(0, _as_int(producer_raw.get("linger_ms"), 50)),
             batch_size=max(1024, _as_int(producer_raw.get("batch_size"), 32768)),
             compression_type=_as_optional_str(producer_raw.get("compression_type"), "gzip"),
-            acks=str(producer_raw.get("acks", "1")),
+            acks=_parse_acks(producer_raw.get("acks"), default=1),
             request_timeout_ms=max(1000, _as_int(producer_raw.get("request_timeout_ms"), 10000)),
         ),
         network=NetworkConfig(
@@ -531,3 +531,19 @@ def _as_optional_str(value: Any, default: str | None) -> str | None:
         return default
     text = str(value).strip()
     return text if text else None
+
+
+def _parse_acks(value: Any, *, default: int | str) -> int | str:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    raw = str(value).strip().lower()
+    if raw in {"all", "-1"}:
+        return "all"
+    try:
+        return int(raw)
+    except ValueError:
+        return default

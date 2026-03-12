@@ -50,12 +50,18 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
     container_name: cs-clickhouse
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-password}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-default}
     ports:
       - "8123:8123"
       - "9000:9000"
+      - "9363:9363"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./sql/clickhouse:/docker-entrypoint-initdb.d
+      - ./config/clickhouse/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro
 
   prometheus:
     image: prom/prometheus:v2.54.1
@@ -76,7 +82,7 @@ services:
       - "3000:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_PASSWORD: Jm7TRdE@mZYZ98
     volumes:
       - grafana_data:/var/lib/grafana
       - ./dashboards/grafana/provisioning:/etc/grafana/provisioning:ro

@@ -103,7 +103,12 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
 3. Start optional observability:
    - `docker compose --profile observability up -d prometheus grafana`
 
+If you customize `.env` values and run Python services from your host shell, export them first:
+- `set -a; source .env; set +a`
+
 ## Python Dependencies
+- Recommended isolated env:
+  - `python3 -m venv .venv && source .venv/bin/activate`
 - `pip install kafka-python`
 - `pip install redis`
 - Optional for ClickHouse writes: `pip install clickhouse-driver`
