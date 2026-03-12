@@ -1,0 +1,25 @@
+{
+  "benchmark": {
+    "name": "50k",
+    "target_eps": 50000,
+    "test_type": "burst"
+  },
+  "runtime": {
+    "warmup_seconds": 45,
+    "duration_seconds": 120,
+    "cooldown_seconds": 30,
+    "measurement_interval_seconds": 1
+  },
+  "injection": {
+    "duplicate_rate": 0.006,
+    "out_of_order_rate": 0.02,
+    "too_late_rate": 0.01,
+    "too_late_threshold_seconds": 600
+  },
+  "services": {
+    "simulator_config": "config/simulator.benchmark.yaml",
+    "processor_config": "config/processor.default.yaml"
+  },
+  "launch_services": false,
+  "notes": "Burst/short sustained tier unless hardware clearly supports long sustained operation."
+}

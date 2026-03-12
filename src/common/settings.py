@@ -41,6 +41,9 @@ class ServiceSettings:
     environment: str
     log_level: str
     log_json: bool
+    metrics_enabled: bool
+    metrics_host: str
+    metrics_port: int
     kafka: KafkaSettings
     redis: RedisSettings
     clickhouse: ClickHouseSettings
@@ -58,6 +61,13 @@ def _env_int(name: str, default: int) -> int:
 def _env_bool(name: str, default: bool) -> bool:
     raw = _env(name, "true" if default else "false").strip().lower()
     return raw in {"1", "true", "yes", "y", "on"}
+
+
+def _as_int(value: str, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def load_yaml_config(path: str | Path) -> dict[str, Any]:
@@ -83,11 +93,29 @@ def load_yaml_config(path: str | Path) -> dict[str, Any]:
 
 
 def load_service_settings(service_name: str) -> ServiceSettings:
+    metrics_port_default = 9300
+    if service_name == "processor":
+        metrics_port_default = 9100
+    elif service_name == "simulator":
+        metrics_port_default = 9200
+
+    metrics_port_env = os.getenv(
+        f"{service_name.upper()}_METRICS_PORT",
+        os.getenv("METRICS_PORT", str(metrics_port_default)),
+    )
+    metrics_host_env = os.getenv(
+        f"{service_name.upper()}_METRICS_HOST",
+        os.getenv("METRICS_HOST", "0.0.0.0"),
+    )
+
     return ServiceSettings(
         service_name=service_name,
         environment=_env("APP_ENV", "local"),
         log_level=_env("LOG_LEVEL", "INFO"),
         log_json=_env_bool("LOG_JSON", False),
+        metrics_enabled=_env_bool("METRICS_ENABLED", True),
+        metrics_host=metrics_host_env,
+        metrics_port=max(1, _as_int(metrics_port_env, metrics_port_default)),
         kafka=KafkaSettings(
             bootstrap_servers=_env("KAFKA_BOOTSTRAP_SERVERS", "localhost:29092"),
             topic_raw=_env("KAFKA_TOPIC_RAW", "cs.ev.events.raw"),

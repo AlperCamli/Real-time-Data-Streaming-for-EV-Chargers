@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.common.logging import configure_logging
+from src.common.prometheus import OptionalPrometheusRegistry
 from src.common.settings import load_service_settings, load_yaml_config
 from src.common.topic_names import TOPIC_EVENTS_RAW
 from src.simulator.config import build_simulator_config
@@ -71,7 +72,8 @@ def main() -> None:
         rng=rng,
     )
 
-    simulator_metrics = SimulatorMetrics()
+    prometheus_registry = OptionalPrometheusRegistry(enabled=service_settings.metrics_enabled)
+    simulator_metrics = SimulatorMetrics(prometheus=prometheus_registry)
     quality_injector = QualityEventInjector(sim_config.data_quality, rng, simulator_metrics)
     tick_controller = TickRateController(sim_config.network.tick_interval_seconds)
 
@@ -87,6 +89,12 @@ def main() -> None:
             "simulator_topic_override_ignored",
             extra={"configured": service_settings.kafka.topic_raw, "frozen": TOPIC_EVENTS_RAW},
         )
+
+    prometheus_registry.start_http_server(
+        host=service_settings.metrics_host,
+        port=service_settings.metrics_port,
+        logger=logger,
+    )
 
     def _handle_signal(sig: int, _frame: object) -> None:
         logger.info("simulator_shutdown_signal", extra={"signal": sig})
@@ -105,6 +113,7 @@ def main() -> None:
             "target_eps": sim_config.network.target_event_rate,
             "topic": TOPIC_EVENTS_RAW,
             "dry_run": sim_config.producer.dry_run,
+            "metrics_endpoint": f"http://{service_settings.metrics_host}:{service_settings.metrics_port}/metrics",
         },
     )
 
@@ -117,6 +126,7 @@ def main() -> None:
             now = datetime.now(timezone.utc)
 
             target_eps = sim_config.target_eps(tick_started_monotonic)
+            simulator_metrics.set_target_eps(target_eps)
             observed_eps = simulator_metrics.current_eps(tick_started_monotonic)
             generated_events = engine.generate_events(
                 now=now,

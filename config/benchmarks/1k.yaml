@@ -1,0 +1,25 @@
+{
+  "benchmark": {
+    "name": "1k",
+    "target_eps": 1000,
+    "test_type": "sustained"
+  },
+  "runtime": {
+    "warmup_seconds": 45,
+    "duration_seconds": 300,
+    "cooldown_seconds": 30,
+    "measurement_interval_seconds": 2
+  },
+  "injection": {
+    "duplicate_rate": 0.002,
+    "out_of_order_rate": 0.008,
+    "too_late_rate": 0.004,
+    "too_late_threshold_seconds": 900
+  },
+  "services": {
+    "simulator_config": "config/simulator.benchmark.yaml",
+    "processor_config": "config/processor.default.yaml"
+  },
+  "launch_services": false,
+  "notes": "Main sustained credibility tier for local benchmark evidence."
+}

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Mapping
 
 from src.common.logging import configure_logging
+from src.common.prometheus import OptionalPrometheusRegistry
 from src.common.settings import load_service_settings, load_yaml_config
 from src.common.table_names import (
     TABLE_AGG_CITY_DAY_FAULTS,
@@ -32,6 +33,7 @@ from src.processor.metrics import (
     COUNTER_AGG_CITY_DAY_FAULTS_ROWS_WRITTEN,
     COUNTER_AGG_OPERATOR_HOUR_ROWS_WRITTEN,
     COUNTER_AGG_STATION_MINUTE_ROWS_WRITTEN,
+    COUNTER_CLICKHOUSE_INSERT_FAILURES,
     COUNTER_DEAD_LETTER_ROWS_WRITTEN,
     COUNTER_DLQ_ROUTED,
     COUNTER_DUPLICATES_DETECTED,
@@ -50,13 +52,16 @@ from src.processor.metrics import (
     COUNTER_STALE_REDIS_WRITE_SKIPS,
     COUNTER_SWEEPER_FINALIZATIONS,
     COUNTER_TOO_LATE_REJECTED,
+    GAUGE_CLICKHOUSE_INSERT_ROWS_PER_SECOND,
+    GAUGE_KAFKA_CONSUMER_LAG,
     HISTOGRAM_BATCH_SIZE,
-    HISTOGRAM_CLICKHOUSE_BATCH_LATENCY_SECONDS,
-    HISTOGRAM_CLICKHOUSE_BATCH_SIZE,
-    HISTOGRAM_CLICKHOUSE_INSERT_ROWS_PER_SECOND,
-    HISTOGRAM_LOOP_DURATION_SECONDS,
-    HISTOGRAM_PROCESSOR_LATENCY_SECONDS,
-    HISTOGRAM_REDIS_WRITE_LATENCY_SECONDS,
+    HISTOGRAM_CLICKHOUSE_BATCH_SIZE_ROWS,
+    HISTOGRAM_CLICKHOUSE_INSERT_LATENCY_MS,
+    HISTOGRAM_END_TO_END_LATENCY_MS,
+    HISTOGRAM_INGEST_LAG_MS,
+    HISTOGRAM_PROCESSOR_LATENCY_MS,
+    HISTOGRAM_PROCESSOR_LOOP_DURATION_MS,
+    HISTOGRAM_REDIS_WRITE_LATENCY_MS,
     ProcessorMetrics,
 )
 from src.processor.models import BatchOutcome, dead_letter_from_raw
@@ -166,6 +171,7 @@ class StreamProcessor:
         return len(expired)
 
     def _process_message(self, message: ConsumedMessage, outcome: BatchOutcome) -> None:
+        processing_started_monotonic = time.monotonic()
         received_at = datetime.now(timezone.utc)
 
         parse_result = parse_message_value(message.value)
@@ -332,10 +338,13 @@ class StreamProcessor:
             self._metrics.inc(COUNTER_ACCEPTED_LATE)
 
         self._metrics.inc(COUNTER_EVENTS_ACCEPTED)
-        self._metrics.observe(
-            HISTOGRAM_PROCESSOR_LATENCY_SECONDS,
-            max(0.0, (received_at - event.event_time.astimezone(timezone.utc)).total_seconds()),
-        )
+        ingest_lag_ms = max(0.0, (received_at - event.event_time.astimezone(timezone.utc)).total_seconds() * 1000.0)
+        processor_latency_ms = max(0.0, (time.monotonic() - processing_started_monotonic) * 1000.0)
+        end_to_end_latency_ms = ingest_lag_ms + processor_latency_ms
+
+        self._metrics.observe(HISTOGRAM_INGEST_LAG_MS, ingest_lag_ms)
+        self._metrics.observe(HISTOGRAM_PROCESSOR_LATENCY_MS, processor_latency_ms)
+        self._metrics.observe(HISTOGRAM_END_TO_END_LATENCY_MS, end_to_end_latency_ms)
         outcome.accepted_count += 1
         self._logger.debug(
             "processor_event_routed",
@@ -364,8 +373,8 @@ class StreamProcessor:
     def _record_redis_metrics(self, redis_result) -> None:
         if redis_result.attempts > 0:
             self._metrics.observe(
-                HISTOGRAM_REDIS_WRITE_LATENCY_SECONDS,
-                redis_result.latency_seconds / max(1, redis_result.attempts),
+                HISTOGRAM_REDIS_WRITE_LATENCY_MS,
+                (redis_result.latency_seconds * 1000.0) / max(1, redis_result.attempts),
             )
 
     def _record_clickhouse_metrics(self, ch_stats) -> None:
@@ -382,14 +391,14 @@ class StreamProcessor:
         self._metrics.inc(COUNTER_AGG_CITY_DAY_FAULTS_ROWS_WRITTEN, rows_by_table.get(TABLE_AGG_CITY_DAY_FAULTS, 0))
 
         for batch_size in ch_stats.batch_sizes:
-            self._metrics.observe(HISTOGRAM_CLICKHOUSE_BATCH_SIZE, float(batch_size))
+            self._metrics.observe(HISTOGRAM_CLICKHOUSE_BATCH_SIZE_ROWS, float(batch_size))
 
         for latency in ch_stats.batch_latency_seconds:
-            self._metrics.observe(HISTOGRAM_CLICKHOUSE_BATCH_LATENCY_SECONDS, latency)
+            self._metrics.observe(HISTOGRAM_CLICKHOUSE_INSERT_LATENCY_MS, latency * 1000.0)
 
         if ch_stats.total_latency_seconds > 0 and ch_stats.total_rows > 0:
             rows_per_second = ch_stats.total_rows / ch_stats.total_latency_seconds
-            self._metrics.observe(HISTOGRAM_CLICKHOUSE_INSERT_ROWS_PER_SECOND, rows_per_second)
+            self._metrics.set_gauge(GAUGE_CLICKHOUSE_INSERT_ROWS_PER_SECOND, rows_per_second)
 
     def _route_dead_letter(
         self,
@@ -451,7 +460,8 @@ def main() -> None:
         json_logs=service_settings.log_json,
     )
 
-    metrics = ProcessorMetrics()
+    prometheus_registry = OptionalPrometheusRegistry(enabled=service_settings.metrics_enabled)
+    metrics = ProcessorMetrics(prometheus=prometheus_registry)
 
     raw_topic = TOPIC_EVENTS_RAW
     dlq_topic = TOPIC_EVENTS_DLQ
@@ -524,6 +534,12 @@ def main() -> None:
         logger=logger,
     )
 
+    prometheus_registry.start_http_server(
+        host=service_settings.metrics_host,
+        port=service_settings.metrics_port,
+        logger=logger,
+    )
+
     def _handle_signal(sig: int, _frame: object) -> None:
         logger.info("processor_shutdown_signal", extra={"signal": sig})
         stop_event.set()
@@ -542,6 +558,7 @@ def main() -> None:
             "late_events_enabled": processor_config.processing.late_events_enabled,
             "dedup_backend": dedup_backend.backend_name,
             "allowed_lateness_seconds": processor_config.processing.allowed_lateness_seconds,
+            "metrics_endpoint": f"http://{service_settings.metrics_host}:{service_settings.metrics_port}/metrics",
         },
     )
 
@@ -581,16 +598,21 @@ def main() -> None:
                         },
                     )
                 except Exception as exc:  # noqa: BLE001
+                    metrics.inc(COUNTER_CLICKHOUSE_INSERT_FAILURES)
                     logger.exception("processor_batch_failed", extra={"error": str(exc), "batch_size": len(messages)})
                     commit_batch = False
             else:
-                processor.flush(force=False, finalize_windows=False)
+                try:
+                    processor.flush(force=False, finalize_windows=False)
+                except Exception as exc:  # noqa: BLE001
+                    metrics.inc(COUNTER_CLICKHOUSE_INSERT_FAILURES)
+                    logger.exception("processor_background_flush_failed", extra={"error": str(exc)})
 
             if commit_batch:
                 consumer.commit()
 
-            loop_duration = time.monotonic() - loop_started
-            metrics.observe(HISTOGRAM_LOOP_DURATION_SECONDS, loop_duration)
+            loop_duration_ms = max(0.0, (time.monotonic() - loop_started) * 1000.0)
+            metrics.observe(HISTOGRAM_PROCESSOR_LOOP_DURATION_MS, loop_duration_ms)
 
             if args.max_loops > 0 and loops >= args.max_loops:
                 logger.info("processor_runtime_loop_limit_reached", extra={"max_loops": args.max_loops})
@@ -599,17 +621,23 @@ def main() -> None:
             now_monotonic = time.monotonic()
             if now_monotonic - last_health_log >= 10.0:
                 last_health_log = now_monotonic
+                consumer_lag = consumer.estimate_total_lag()
+                if consumer_lag is not None:
+                    metrics.set_gauge(GAUGE_KAFKA_CONSUMER_LAG, float(consumer_lag))
                 snapshot = metrics.snapshot()
                 logger.info(
                     "processor_runtime_health",
                     extra={
                         "loops": loops,
                         "counters": snapshot.counters,
+                        "gauges": snapshot.gauges,
                         "histograms": {
                             metric_name: {
                                 "count": metric_snapshot.count,
                                 "sum": round(metric_snapshot.sum, 3),
                                 "max": round(metric_snapshot.max, 3),
+                                "p95": round(metric_snapshot.p95, 3),
+                                "p99": round(metric_snapshot.p99, 3),
                             }
                             for metric_name, metric_snapshot in snapshot.histograms.items()
                         },
@@ -627,11 +655,14 @@ def main() -> None:
             extra={
                 "loops": loops,
                 "counters": snapshot.counters,
+                "gauges": snapshot.gauges,
                 "histograms": {
                     metric_name: {
                         "count": metric_snapshot.count,
                         "sum": round(metric_snapshot.sum, 3),
                         "max": round(metric_snapshot.max, 3),
+                        "p95": round(metric_snapshot.p95, 3),
+                        "p99": round(metric_snapshot.p99, 3),
                     }
                     for metric_name, metric_snapshot in snapshot.histograms.items()
                 },

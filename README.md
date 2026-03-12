@@ -55,8 +55,14 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
 │   ├── simulator.default.yaml
 │   ├── simulator.benchmark.yaml
 │   ├── processor.default.yaml
+│   ├── benchmarks/
+│   │   ├── 1k.yaml
+│   │   ├── 10k.yaml
+│   │   ├── 50k.yaml
+│   │   └── 100k.yaml
 │   └── prometheus/prometheus.yml
 ├── src/
+│   ├── benchmarks/
 │   ├── common/
 │   │   ├── settings.py
 │   │   ├── logging.py
@@ -79,7 +85,10 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
 │   ├── 005_create_agg_station_minute.sql
 │   ├── 006_create_agg_operator_hour.sql
 │   └── 007_create_agg_city_day_faults.sql
-├── dashboards/grafana/README.md
+├── dashboards/grafana/
+│   ├── dashboards/
+│   ├── provisioning/
+│   └── README.md
 ├── notebooks/README.md
 └── tests/
     ├── unit/
@@ -99,6 +108,7 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
 - `pip install redis`
 - Optional for ClickHouse writes: `pip install clickhouse-driver`
 - Optional for YAML-native config files: `pip install pyyaml`
+- Optional for metrics endpoints: `pip install prometheus-client`
 
 ## Service Entry Points
 - Simulator:
@@ -108,6 +118,26 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
 - Processor:
   - `python -m src.processor.main --config config/processor.default.yaml`
   - smoke loop: `python -m src.processor.main --config config/processor.default.yaml --max-loops 10`
+- Metrics endpoints:
+  - simulator: `http://localhost:9200/metrics`
+  - processor: `http://localhost:9100/metrics`
+
+## Benchmark Runner
+- Run a tier profile:
+  - `python -m src.benchmarks.run --profile config/benchmarks/1k.yaml`
+- Run without query benchmark:
+  - `python -m src.benchmarks.run --profile config/benchmarks/10k.yaml --skip-query-benchmark`
+- Launch simulator+processor from the runner:
+  - `python -m src.benchmarks.run --profile config/benchmarks/50k.yaml --launch-services`
+
+Benchmark outputs are written under:
+- `benchmark_results/runs/<run_id>/result.json`
+- `benchmark_results/runs/<run_id>/result.csv`
+- `benchmark_results/runs/<run_id>/summary.md`
+- `benchmark_results/latest/`
+- `benchmark_results/summary.json`
+- `benchmark_results/summary.csv`
+- `benchmark_results/summary.md`
 
 ## Implemented In This Phase
 - Repository skeleton and modular package layout
@@ -142,4 +172,4 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
 
 ## Deferred To Later Phases
 - Advanced retro-correction and backfill/recompute workflows
-- Dashboard implementation and benchmark reporting
+- Final polished dashboard design and submission narrative

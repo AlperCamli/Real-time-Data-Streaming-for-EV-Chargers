@@ -1,0 +1,25 @@
+{
+  "benchmark": {
+    "name": "100k",
+    "target_eps": 100000,
+    "test_type": "stress"
+  },
+  "runtime": {
+    "warmup_seconds": 30,
+    "duration_seconds": 60,
+    "cooldown_seconds": 30,
+    "measurement_interval_seconds": 1
+  },
+  "injection": {
+    "duplicate_rate": 0.008,
+    "out_of_order_rate": 0.03,
+    "too_late_rate": 0.015,
+    "too_late_threshold_seconds": 600
+  },
+  "services": {
+    "simulator_config": "config/simulator.benchmark.yaml",
+    "processor_config": "config/processor.default.yaml"
+  },
+  "launch_services": false,
+  "notes": "Stress ceiling tier; do not claim sustained success without explicit extended measurements."
+}

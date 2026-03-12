@@ -81,6 +81,29 @@ class KafkaEventConsumer:
     def commit(self) -> None:
         self._consumer.commit()
 
+    def estimate_total_lag(self) -> int | None:
+        try:
+            partitions = list(self._consumer.assignment())
+            if not partitions:
+                self._consumer.poll(timeout_ms=0, max_records=0)
+                partitions = list(self._consumer.assignment())
+            if not partitions:
+                return None
+
+            end_offsets = self._consumer.end_offsets(partitions)
+            total_lag = 0
+            for partition in partitions:
+                latest = int(end_offsets.get(partition, 0))
+                try:
+                    position = int(self._consumer.position(partition))
+                except Exception:  # noqa: BLE001
+                    continue
+                total_lag += max(0, latest - position)
+            return total_lag
+        except Exception as exc:  # noqa: BLE001
+            self._logger.debug("processor_consumer_lag_estimation_failed", extra={"error": str(exc)})
+            return None
+
     def close(self) -> None:
         try:
             self._consumer.commit()
