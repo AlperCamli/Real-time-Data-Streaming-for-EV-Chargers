@@ -1,0 +1,17 @@
+{
+  "processing": {
+    "event_time_field": "event_time",
+    "dedup_key_field": "event_id",
+    "dedup_ttl_seconds": 86400,
+    "late_events_enabled": true,
+    "too_late_threshold_seconds": 300,
+    "count_duplicates_and_discard": true
+  },
+  "session_rules": {
+    "finalize_on_session_stop": true,
+    "inactivity_timeout_seconds": 900,
+    "finalize_on_fault_termination": true,
+    "fact_sessions_append_once": true,
+    "retro_correction_from_ultra_late": false
+  }
+}

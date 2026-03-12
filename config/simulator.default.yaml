@@ -1,0 +1,39 @@
+{
+  "mode": "default",
+  "producer": {
+    "producer_id": "simulator-local",
+    "schema_version": "1.0",
+    "seed": 42
+  },
+  "simulation": {
+    "station_count": 50,
+    "connectors_per_station": 4,
+    "event_rate_per_second": 25,
+    "session_start_probability": 0.08
+  },
+  "peak_hour": {
+    "enabled": true,
+    "start_hour": 17,
+    "end_hour": 21,
+    "demand_multiplier": 1.8
+  },
+  "faults": {
+    "fault_rate": 0.01,
+    "severity_weights": {
+      "low": 0.7,
+      "medium": 0.2,
+      "high": 0.1
+    }
+  },
+  "data_quality": {
+    "duplicate_injection_rate": 0.003,
+    "out_of_order_injection_rate": 0.02,
+    "late_event_injection_rate": 0.01,
+    "too_late_threshold_seconds": 300
+  },
+  "benchmark": {
+    "enabled": false,
+    "sustained_mode": false,
+    "burst_mode": false
+  }
+}
