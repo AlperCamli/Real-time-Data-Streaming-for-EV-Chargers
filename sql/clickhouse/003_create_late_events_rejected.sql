@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS late_events_rejected
     sequence_no UInt64,
     lateness_seconds UInt32,
     payload_json String,
+    rejection_reason LowCardinality(String),
     rejected_at DateTime64(3, 'UTC') DEFAULT now64(3)
 )
 ENGINE = MergeTree

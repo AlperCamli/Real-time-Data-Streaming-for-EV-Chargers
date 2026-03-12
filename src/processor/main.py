@@ -12,32 +12,58 @@ from typing import Mapping
 
 from src.common.logging import configure_logging
 from src.common.settings import load_service_settings, load_yaml_config
+from src.common.table_names import (
+    TABLE_AGG_CITY_DAY_FAULTS,
+    TABLE_AGG_OPERATOR_HOUR,
+    TABLE_AGG_STATION_MINUTE,
+    TABLE_DEAD_LETTER_EVENTS,
+    TABLE_FACT_SESSIONS,
+    TABLE_LATE_EVENTS_REJECTED,
+    TABLE_RAW_EVENTS,
+)
 from src.common.topic_names import TOPIC_EVENTS_DLQ, TOPIC_EVENTS_LATE, TOPIC_EVENTS_RAW
 from src.processor.config import ProcessorConfig, build_processor_config
 from src.processor.consumer import ConsumedMessage, KafkaEventConsumer
 from src.processor.dedup import DedupBackend, build_deduplicator
+from src.processor.finalization import AggregateAccumulator, SessionFactFinalizer, SessionTimeoutSweeper
 from src.processor.lateness import classify_lateness
 from src.processor.metrics import (
     COUNTER_ACCEPTED_LATE,
+    COUNTER_AGG_CITY_DAY_FAULTS_ROWS_WRITTEN,
+    COUNTER_AGG_OPERATOR_HOUR_ROWS_WRITTEN,
+    COUNTER_AGG_STATION_MINUTE_ROWS_WRITTEN,
+    COUNTER_DEAD_LETTER_ROWS_WRITTEN,
     COUNTER_DLQ_ROUTED,
     COUNTER_DUPLICATES_DETECTED,
     COUNTER_EVENTS_ACCEPTED,
     COUNTER_EVENTS_CONSUMED,
+    COUNTER_FACT_ROWS_WRITTEN,
+    COUNTER_FINALIZATION_FAILURES,
+    COUNTER_FINALIZED_FAULT,
+    COUNTER_FINALIZED_NORMAL_STOP,
+    COUNTER_FINALIZED_TIMEOUT,
+    COUNTER_LATE_ROWS_WRITTEN,
     COUNTER_PARSE_FAILURES,
+    COUNTER_RAW_ROWS_WRITTEN,
     COUNTER_SCHEMA_VALIDATION_FAILURES,
     COUNTER_SEMANTIC_VALIDATION_FAILURES,
     COUNTER_STALE_REDIS_WRITE_SKIPS,
+    COUNTER_SWEEPER_FINALIZATIONS,
     COUNTER_TOO_LATE_REJECTED,
     HISTOGRAM_BATCH_SIZE,
+    HISTOGRAM_CLICKHOUSE_BATCH_LATENCY_SECONDS,
+    HISTOGRAM_CLICKHOUSE_BATCH_SIZE,
+    HISTOGRAM_CLICKHOUSE_INSERT_ROWS_PER_SECOND,
     HISTOGRAM_LOOP_DURATION_SECONDS,
     HISTOGRAM_PROCESSOR_LATENCY_SECONDS,
+    HISTOGRAM_REDIS_WRITE_LATENCY_SECONDS,
     ProcessorMetrics,
 )
 from src.processor.models import BatchOutcome, dead_letter_from_raw
 from src.processor.parser import ParseResult, parse_message_value
 from src.processor.routing import route_accepted, route_duplicate, route_invalid, route_too_late
 from src.processor.sinks import ClickHouseSink, KafkaDlqSink, KafkaJsonTopicSink, RedisStateSink, build_redis_client
-from src.processor.state import SessionStateStore
+from src.processor.state import SessionSnapshot, SessionStateStore
 from src.processor.validators import validate_envelope_schema, validate_event_semantics
 
 
@@ -84,6 +110,8 @@ class StreamProcessor:
         self._dedup = dedup_backend.deduplicator
         self._session_state = session_state
         self._logger = logger
+        self._session_finalizer = SessionFactFinalizer()
+        self._aggregates = AggregateAccumulator(default_tariff_eur_per_kwh=config.session_rules.default_tariff_eur_per_kwh)
 
     def process_batch(self, messages: list[ConsumedMessage]) -> BatchOutcome:
         outcome = BatchOutcome()
@@ -94,14 +122,22 @@ class StreamProcessor:
 
         return outcome
 
-    def flush(self, force: bool = False) -> None:
-        self._clickhouse.flush(force=force)
+    def flush(self, *, force: bool = False, finalize_windows: bool = False) -> None:
+        now = datetime.now(timezone.utc)
+        aggregate_rows = self._aggregates.flush_ready(now=now, force=finalize_windows)
+        self._clickhouse.enqueue_agg_station_minute_rows(aggregate_rows.station_minute_rows)
+        self._clickhouse.enqueue_agg_operator_hour_rows(aggregate_rows.operator_hour_rows)
+        self._clickhouse.enqueue_agg_city_day_fault_rows(aggregate_rows.city_day_fault_rows)
+
+        ch_stats = self._clickhouse.flush(force=force)
+        self._record_clickhouse_metrics(ch_stats)
+
         self._dlq_sink.flush(force=force)
         if self._late_sink is not None:
             self._late_sink.flush(force=force)
 
     def close(self) -> None:
-        self.flush(force=True)
+        self.flush(force=True, finalize_windows=True)
         self._clickhouse.close()
         self._dlq_sink.close()
         if self._late_sink is not None:
@@ -112,6 +148,21 @@ class StreamProcessor:
             now=datetime.now(timezone.utc),
             inactivity_timeout_seconds=self._config.session_rules.inactivity_timeout_seconds,
         )
+
+        for snapshot in expired:
+            try:
+                self._finalize_session_snapshot(snapshot)
+                active_count = self._session_state.active_sessions_for_station(snapshot.station_id)
+                redis_result = self._redis.finalize_timeout_session(snapshot, active_session_count=active_count)
+                self._record_redis_metrics(redis_result)
+                self._metrics.inc(COUNTER_SWEEPER_FINALIZATIONS)
+            except Exception as exc:  # noqa: BLE001
+                self._metrics.inc(COUNTER_FINALIZATION_FAILURES)
+                self._logger.exception(
+                    "processor_timeout_finalization_failed",
+                    extra={"session_id": snapshot.session_id, "error": str(exc)},
+                )
+
         return len(expired)
 
     def _process_message(self, message: ConsumedMessage, outcome: BatchOutcome) -> None:
@@ -151,7 +202,12 @@ class StreamProcessor:
             self._metrics.inc(COUNTER_DUPLICATES_DETECTED)
             self._logger.debug(
                 "processor_event_routed",
-                extra={"event_id": event.event_id, "event_type": event.event_type.value, "disposition": decision.disposition.value, "reason": decision.reason},
+                extra={
+                    "event_id": event.event_id,
+                    "event_type": event.event_type.value,
+                    "disposition": decision.disposition.value,
+                    "reason": decision.reason,
+                },
             )
             return
 
@@ -215,7 +271,6 @@ class StreamProcessor:
             finalize_on_fault_termination=self._config.session_rules.finalize_on_fault_termination,
         )
 
-        # historical acceptance remains true even when session mutation is skipped.
         if not session_mutation.applied:
             self._logger.info(
                 "processor_session_mutation_skipped",
@@ -230,7 +285,15 @@ class StreamProcessor:
         if session_snapshot is None and event.session_id:
             session_snapshot = self._session_state.get_session(event.session_id)
 
-        redis_result = self._redis.apply_event(event, session_snapshot=session_snapshot)
+        active_session_count = self._session_state.active_sessions_for_station(event.station_id)
+        redis_result = self._redis.apply_event(
+            event,
+            session_snapshot=session_snapshot,
+            session_mutation_applied=session_mutation.applied,
+            active_session_count=active_session_count,
+        )
+        self._record_redis_metrics(redis_result)
+
         stale_for_redis = redis_result.is_stale_event
         decision = route_accepted(lateness.classification, stale_for_redis=stale_for_redis)
         if stale_for_redis:
@@ -247,6 +310,22 @@ class StreamProcessor:
             )
 
         self._clickhouse.enqueue_raw_event(event)
+        self._aggregates.record_event(
+            event,
+            session_snapshot=session_snapshot,
+            session_mutation_applied=session_mutation.applied,
+            active_session_count=active_session_count,
+        )
+
+        if session_mutation.finalized and session_mutation.snapshot is not None:
+            try:
+                self._finalize_session_snapshot(session_mutation.snapshot)
+            except Exception as exc:  # noqa: BLE001
+                self._metrics.inc(COUNTER_FINALIZATION_FAILURES)
+                self._logger.exception(
+                    "processor_session_finalization_failed",
+                    extra={"session_id": session_mutation.snapshot.session_id, "error": str(exc)},
+                )
 
         if lateness.is_accepted_late:
             outcome.accepted_late_count += 1
@@ -269,6 +348,48 @@ class StreamProcessor:
                 "stale_for_redis": stale_for_redis,
             },
         )
+
+    def _finalize_session_snapshot(self, snapshot: SessionSnapshot) -> None:
+        fact = self._session_finalizer.build_fact(snapshot)
+        self._clickhouse.enqueue_fact_session(fact)
+        self._aggregates.record_finalized_session(fact)
+
+        if fact.finalized_reason == "normal_stop":
+            self._metrics.inc(COUNTER_FINALIZED_NORMAL_STOP)
+        elif fact.finalized_reason == "fault_termination":
+            self._metrics.inc(COUNTER_FINALIZED_FAULT)
+        elif fact.finalized_reason == "inactivity_timeout":
+            self._metrics.inc(COUNTER_FINALIZED_TIMEOUT)
+
+    def _record_redis_metrics(self, redis_result) -> None:
+        if redis_result.attempts > 0:
+            self._metrics.observe(
+                HISTOGRAM_REDIS_WRITE_LATENCY_SECONDS,
+                redis_result.latency_seconds / max(1, redis_result.attempts),
+            )
+
+    def _record_clickhouse_metrics(self, ch_stats) -> None:
+        rows_by_table = ch_stats.rows_by_table
+        if not rows_by_table:
+            return
+
+        self._metrics.inc(COUNTER_RAW_ROWS_WRITTEN, rows_by_table.get(TABLE_RAW_EVENTS, 0))
+        self._metrics.inc(COUNTER_DEAD_LETTER_ROWS_WRITTEN, rows_by_table.get(TABLE_DEAD_LETTER_EVENTS, 0))
+        self._metrics.inc(COUNTER_LATE_ROWS_WRITTEN, rows_by_table.get(TABLE_LATE_EVENTS_REJECTED, 0))
+        self._metrics.inc(COUNTER_FACT_ROWS_WRITTEN, rows_by_table.get(TABLE_FACT_SESSIONS, 0))
+        self._metrics.inc(COUNTER_AGG_STATION_MINUTE_ROWS_WRITTEN, rows_by_table.get(TABLE_AGG_STATION_MINUTE, 0))
+        self._metrics.inc(COUNTER_AGG_OPERATOR_HOUR_ROWS_WRITTEN, rows_by_table.get(TABLE_AGG_OPERATOR_HOUR, 0))
+        self._metrics.inc(COUNTER_AGG_CITY_DAY_FAULTS_ROWS_WRITTEN, rows_by_table.get(TABLE_AGG_CITY_DAY_FAULTS, 0))
+
+        for batch_size in ch_stats.batch_sizes:
+            self._metrics.observe(HISTOGRAM_CLICKHOUSE_BATCH_SIZE, float(batch_size))
+
+        for latency in ch_stats.batch_latency_seconds:
+            self._metrics.observe(HISTOGRAM_CLICKHOUSE_BATCH_LATENCY_SECONDS, latency)
+
+        if ch_stats.total_latency_seconds > 0 and ch_stats.total_rows > 0:
+            rows_per_second = ch_stats.total_rows / ch_stats.total_latency_seconds
+            self._metrics.observe(HISTOGRAM_CLICKHOUSE_INSERT_ROWS_PER_SECOND, rows_per_second)
 
     def _route_dead_letter(
         self,
@@ -343,7 +464,12 @@ def main() -> None:
         )
 
     redis_client = build_redis_client(service_settings.redis, logger)
-    redis_sink = RedisStateSink(redis_client=redis_client, logger=logger)
+    redis_sink = RedisStateSink(
+        redis_client=redis_client,
+        logger=logger,
+        session_state_ttl_seconds=processor_config.sinks.redis_session_state_ttl_seconds,
+        finalized_session_ttl_seconds=processor_config.sinks.redis_finalized_session_ttl_seconds,
+    )
     dedup_backend = build_deduplicator(
         redis_client=redis_client,
         ttl_seconds=processor_config.processing.dedup_ttl_seconds,
@@ -354,6 +480,7 @@ def main() -> None:
         settings=service_settings.clickhouse,
         logger=logger,
         batch_size=processor_config.sinks.clickhouse_batch_size,
+        flush_interval_seconds=processor_config.sinks.clickhouse_flush_interval_seconds,
     )
 
     dlq_sink = KafkaDlqSink(
@@ -373,6 +500,7 @@ def main() -> None:
         )
 
     session_state = SessionStateStore()
+    sweeper = SessionTimeoutSweeper(run_interval_seconds=processor_config.session_rules.timeout_sweeper_interval_seconds)
 
     processor = StreamProcessor(
         config=processor_config,
@@ -425,18 +553,19 @@ def main() -> None:
             loop_started = time.monotonic()
             loops += 1
 
+            if sweeper.should_run(loop_started):
+                expired_sessions = processor.expire_inactive_sessions()
+                if expired_sessions:
+                    logger.info("processor_sessions_expired", extra={"count": expired_sessions})
+
             messages = consumer.poll()
             metrics.observe(HISTOGRAM_BATCH_SIZE, float(len(messages)))
-
-            expired_sessions = processor.expire_inactive_sessions()
-            if expired_sessions:
-                logger.info("processor_sessions_expired", extra={"count": expired_sessions})
 
             commit_batch = False
             if messages:
                 try:
                     outcome = processor.process_batch(messages)
-                    processor.flush(force=True)
+                    processor.flush(force=True, finalize_windows=False)
                     commit_batch = True
 
                     logger.info(
@@ -454,6 +583,8 @@ def main() -> None:
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("processor_batch_failed", extra={"error": str(exc), "batch_size": len(messages)})
                     commit_batch = False
+            else:
+                processor.flush(force=False, finalize_windows=False)
 
             if commit_batch:
                 consumer.commit()

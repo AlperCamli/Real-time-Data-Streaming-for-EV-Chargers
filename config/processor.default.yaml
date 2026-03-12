@@ -15,13 +15,18 @@
   "session_rules": {
     "finalize_on_session_stop": true,
     "inactivity_timeout_seconds": 900,
+    "timeout_sweeper_interval_seconds": 5.0,
     "finalize_on_fault_termination": true,
     "fact_sessions_append_once": true,
-    "retro_correction_from_ultra_late": false
+    "retro_correction_from_ultra_late": false,
+    "default_tariff_eur_per_kwh": 0.35
   },
   "sinks": {
     "clickhouse_batch_size": 500,
+    "clickhouse_flush_interval_seconds": 1.0,
     "kafka_batch_size": 200,
-    "flush_interval_seconds": 1.0
+    "flush_interval_seconds": 1.0,
+    "redis_session_state_ttl_seconds": 86400,
+    "redis_finalized_session_ttl_seconds": 3600
   }
 }

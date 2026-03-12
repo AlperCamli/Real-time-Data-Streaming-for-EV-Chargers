@@ -130,12 +130,16 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
   - DLQ routing to Kafka `cs.ev.events.dlq` plus ClickHouse `dead_letter_events`
   - late rejection routing to ClickHouse `late_events_rejected` and optional Kafka late topic
   - Redis dedup (`dedup:{event_id}`) with in-memory fallback
-  - Redis serving-state sink (`station`, `connector`, `session`) with timestamp guards
-  - ClickHouse sink adapters for `raw_events`, `dead_letter_events`, `late_events_rejected`
-  - processor-side session working state scaffold (start/update/stop/inactivity expiry)
-  - benchmark-friendly counters and loop/batch/latency histogram hooks
+  - Redis serving-state sink (`station`, `connector`, `session`) with timestamp guards and event-type lifecycle behavior
+  - ClickHouse batched append sink for `raw_events`, `dead_letter_events`, `late_events_rejected`, `fact_sessions`, and frozen aggregate tables
+  - processor-side session working state with deterministic finalization (`normal_stop`, `fault_termination`, `inactivity_timeout`)
+  - timeout sweeper for abandoned sessions and Redis cleanup/expiry behavior for session working state
+  - minimal in-memory aggregate windows flushed as finalized rows for:
+    - `agg_station_minute`
+    - `agg_operator_hour`
+    - `agg_city_day_faults`
+  - benchmark-friendly sink/finalization counters and latency/batch histograms
 
 ## Deferred To Later Phases
-- Full fact/aggregate materialization logic (`fact_sessions`, aggregate table writers)
-- Advanced session finalization policies and recovery/backfill workflows
+- Advanced retro-correction and backfill/recompute workflows
 - Dashboard implementation and benchmark reporting

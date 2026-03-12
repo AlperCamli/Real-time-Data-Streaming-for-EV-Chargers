@@ -29,16 +29,21 @@ class ProcessingConfig:
 class SessionRulesConfig:
     finalize_on_session_stop: bool
     inactivity_timeout_seconds: int
+    timeout_sweeper_interval_seconds: float
     finalize_on_fault_termination: bool
     fact_sessions_append_once: bool
     retro_correction_from_ultra_late: bool
+    default_tariff_eur_per_kwh: float
 
 
 @dataclass(frozen=True)
 class SinkConfig:
     clickhouse_batch_size: int
+    clickhouse_flush_interval_seconds: float
     kafka_batch_size: int
     flush_interval_seconds: float
+    redis_session_state_ttl_seconds: int
+    redis_finalized_session_ttl_seconds: int
 
 
 @dataclass(frozen=True)
@@ -79,14 +84,28 @@ def build_processor_config(raw: Mapping[str, Any], service_settings: ServiceSett
         session_rules=SessionRulesConfig(
             finalize_on_session_stop=_as_bool(session_rules_raw.get("finalize_on_session_stop"), True),
             inactivity_timeout_seconds=max(30, _as_int(session_rules_raw.get("inactivity_timeout_seconds"), 900)),
+            timeout_sweeper_interval_seconds=max(
+                0.5,
+                _as_float(session_rules_raw.get("timeout_sweeper_interval_seconds"), 5.0),
+            ),
             finalize_on_fault_termination=_as_bool(session_rules_raw.get("finalize_on_fault_termination"), True),
             fact_sessions_append_once=_as_bool(session_rules_raw.get("fact_sessions_append_once"), True),
             retro_correction_from_ultra_late=_as_bool(session_rules_raw.get("retro_correction_from_ultra_late"), False),
+            default_tariff_eur_per_kwh=max(0.0, _as_float(session_rules_raw.get("default_tariff_eur_per_kwh"), 0.35)),
         ),
         sinks=SinkConfig(
             clickhouse_batch_size=max(1, _as_int(sinks_raw.get("clickhouse_batch_size"), 500)),
+            clickhouse_flush_interval_seconds=max(
+                0.1,
+                _as_float(sinks_raw.get("clickhouse_flush_interval_seconds"), _as_float(sinks_raw.get("flush_interval_seconds"), 1.0)),
+            ),
             kafka_batch_size=max(1, _as_int(sinks_raw.get("kafka_batch_size"), 200)),
             flush_interval_seconds=max(0.1, _as_float(sinks_raw.get("flush_interval_seconds"), 1.0)),
+            redis_session_state_ttl_seconds=max(60, _as_int(sinks_raw.get("redis_session_state_ttl_seconds"), 86400)),
+            redis_finalized_session_ttl_seconds=max(
+                60,
+                _as_int(sinks_raw.get("redis_finalized_session_ttl_seconds"), 3600),
+            ),
         ),
     )
 

@@ -44,6 +44,8 @@ def validate_event_semantics(event: EventEnvelope, session_lookup: SessionLookup
     if isinstance(event.payload, SessionStartPayload):
         if event.payload.initial_meter_kwh < 0:
             errors.append("SESSION_START payload.initial_meter_kwh must be non-negative")
+        if event.payload.tariff_eur_per_kwh is not None and event.payload.tariff_eur_per_kwh < 0:
+            errors.append("SESSION_START payload.tariff_eur_per_kwh must be non-negative")
 
     if isinstance(event.payload, MeterUpdatePayload):
         if event.sequence_no <= 0:

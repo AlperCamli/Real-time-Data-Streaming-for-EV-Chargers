@@ -14,6 +14,9 @@ class SessionStartPayload:
     auth_method: str | None = None
     vehicle_id: str | None = None
     vehicle_brand: str | None = None
+    vehicle_model: str | None = None
+    tariff_id: str | None = None
+    tariff_eur_per_kwh: float | None = None
     soc_start_percent: float | None = None
     target_soc_percent: float | None = None
 
@@ -43,6 +46,7 @@ class SessionStopPayload:
     total_energy_kwh: float | None = None
     final_soc_percent: float | None = None
     vehicle_brand: str | None = None
+    vehicle_model: str | None = None
 
 
 @dataclass(slots=True)
