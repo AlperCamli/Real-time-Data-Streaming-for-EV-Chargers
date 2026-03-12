@@ -1,1 +1,1 @@
-"""Processor package."""
+"""Stream processor package."""

@@ -70,7 +70,7 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
 │   │       ├── event_payloads.py
 │   │       └── validation.py
 │   ├── simulator/main.py
-│   └── processor/main.py
+│   └── processor/
 ├── sql/clickhouse/
 │   ├── 001_create_raw_events.sql
 │   ├── 002_create_dead_letter_events.sql
@@ -96,6 +96,8 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
 
 ## Python Dependencies
 - `pip install kafka-python`
+- `pip install redis`
+- Optional for ClickHouse writes: `pip install clickhouse-driver`
 - Optional for YAML-native config files: `pip install pyyaml`
 
 ## Service Entry Points
@@ -103,8 +105,9 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
   - `python -m src.simulator.main --config config/simulator.default.yaml`
   - smoke test: `python -m src.simulator.main --config config/simulator.default.yaml --max-runtime-seconds 20`
   - benchmark profile: `python -m src.simulator.main --config config/simulator.benchmark.yaml`
-- Processor placeholder:
+- Processor:
   - `python -m src.processor.main --config config/processor.default.yaml`
+  - smoke loop: `python -m src.processor.main --config config/processor.default.yaml --max-loops 10`
 
 ## Implemented In This Phase
 - Repository skeleton and modular package layout
@@ -121,9 +124,18 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
   - duplicate/out-of-order/too-late injection hooks
   - Kafka publishing to `cs.ev.events.raw` with batching and structured error logging
   - internal metrics hooks for throughput, event counts, faults, injections, failures, active sessions
+- Stream processor implementation with:
+  - Kafka consume loop from `cs.ev.events.raw` with manual commit after sink flush
+  - staged parse -> schema validation -> semantic validation -> dedup -> lateness classification -> routing
+  - DLQ routing to Kafka `cs.ev.events.dlq` plus ClickHouse `dead_letter_events`
+  - late rejection routing to ClickHouse `late_events_rejected` and optional Kafka late topic
+  - Redis dedup (`dedup:{event_id}`) with in-memory fallback
+  - Redis serving-state sink (`station`, `connector`, `session`) with timestamp guards
+  - ClickHouse sink adapters for `raw_events`, `dead_letter_events`, `late_events_rejected`
+  - processor-side session working state scaffold (start/update/stop/inactivity expiry)
+  - benchmark-friendly counters and loop/batch/latency histogram hooks
 
 ## Deferred To Later Phases
-- Processor consumer/runtime logic
-- Dedup, late-event, and stateful processing implementation
-- Session reconstruction and aggregate materialization jobs
+- Full fact/aggregate materialization logic (`fact_sessions`, aggregate table writers)
+- Advanced session finalization policies and recovery/backfill workflows
 - Dashboard implementation and benchmark reporting
