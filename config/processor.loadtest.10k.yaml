@@ -1,0 +1,32 @@
+{
+  "consumer": {
+    "poll_timeout_ms": 50,
+    "max_poll_records": 20000,
+    "auto_offset_reset": "latest"
+  },
+  "processing": {
+    "event_time_field": "event_time",
+    "dedup_key_field": "event_id",
+    "dedup_ttl_seconds": 86400,
+    "late_events_enabled": true,
+    "allowed_lateness_seconds": 600,
+    "count_duplicates_and_discard": true
+  },
+  "session_rules": {
+    "finalize_on_session_stop": true,
+    "inactivity_timeout_seconds": 900,
+    "timeout_sweeper_interval_seconds": 1.0,
+    "finalize_on_fault_termination": true,
+    "fact_sessions_append_once": true,
+    "retro_correction_from_ultra_late": false,
+    "default_tariff_eur_per_kwh": 0.35
+  },
+  "sinks": {
+    "clickhouse_batch_size": 8000,
+    "clickhouse_flush_interval_seconds": 0.2,
+    "kafka_batch_size": 3000,
+    "flush_interval_seconds": 0.2,
+    "redis_session_state_ttl_seconds": 86400,
+    "redis_finalized_session_ttl_seconds": 3600
+  }
+}

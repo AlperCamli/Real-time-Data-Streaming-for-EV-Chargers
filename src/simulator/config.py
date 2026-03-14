@@ -181,7 +181,7 @@ def build_simulator_config(raw: Mapping[str, Any]) -> SimulatorConfig:
         simulation_raw.get("target_event_rate", simulation_raw.get("event_rate_per_second")),
         80.0,
     )
-    tick_interval_seconds = max(0.1, _as_float(simulation_raw.get("tick_interval_seconds"), 1.0))
+    tick_interval_seconds = max(0.05, _as_float(simulation_raw.get("tick_interval_seconds"), 1.0))
 
     session_start_prob = simulation_raw.get("session_start_probability")
     base_start_rate_per_minute = _as_float(
@@ -221,18 +221,21 @@ def build_simulator_config(raw: Mapping[str, Any]) -> SimulatorConfig:
     duration_max = max(duration_min, duration_max_raw)
     duration_mode = min(duration_max, max(duration_min, duration_mode_raw))
 
+    meter_update_interval_min = max(
+        0.2,
+        _as_float(session_raw.get("meter_update_interval_seconds_min"), 8.0),
+    )
+    meter_update_interval_max = max(
+        meter_update_interval_min,
+        _as_float(session_raw.get("meter_update_interval_seconds_max"), 22.0),
+    )
+
     session_cfg = SessionConfig(
         min_duration_minutes=duration_min,
         mode_duration_minutes=duration_mode,
         max_duration_minutes=duration_max,
-        meter_update_interval_seconds_min=max(
-            3.0,
-            _as_float(session_raw.get("meter_update_interval_seconds_min"), 8.0),
-        ),
-        meter_update_interval_seconds_max=max(
-            _as_float(session_raw.get("meter_update_interval_seconds_min"), 8.0),
-            _as_float(session_raw.get("meter_update_interval_seconds_max"), 22.0),
-        ),
+        meter_update_interval_seconds_min=meter_update_interval_min,
+        meter_update_interval_seconds_max=meter_update_interval_max,
         target_soc_percent_min=min(
             95.0,
             max(60.0, _as_float(session_raw.get("target_soc_percent_min"), 78.0)),

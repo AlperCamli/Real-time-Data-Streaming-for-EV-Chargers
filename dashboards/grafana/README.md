@@ -22,6 +22,7 @@ This directory includes minimal provisioning scaffolding for local benchmark obs
 - If Grafana panels are empty, check Prometheus targets first:
   - `http://localhost:9090/targets`
 - `simulator` and `processor` targets are only `UP` while Python services are running.
+- In Docker-first mode, `simulator` and `processor` are scraped as `simulator:9200` and `processor:9100`.
 - `clickhouse` target is scraped from `clickhouse:9363` (container network).
 
 ClickHouse HTTP endpoint note:

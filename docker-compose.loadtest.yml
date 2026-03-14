@@ -1,0 +1,10 @@
+services:
+  simulator:
+    environment:
+      SIMULATOR_CONFIG_PATH: config/simulator.loadtest.1k.yaml
+    restart: unless-stopped
+
+  processor:
+    environment:
+      PROCESSOR_CONFIG_PATH: config/processor.loadtest.1k.yaml
+    restart: unless-stopped

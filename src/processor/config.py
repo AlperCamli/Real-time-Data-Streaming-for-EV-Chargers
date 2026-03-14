@@ -69,7 +69,7 @@ def build_processor_config(raw: Mapping[str, Any], service_settings: ServiceSett
 
     return ProcessorConfig(
         consumer=ConsumerConfig(
-            poll_timeout_ms=max(100, _as_int(consumer_raw.get("poll_timeout_ms"), 1000)),
+            poll_timeout_ms=max(10, _as_int(consumer_raw.get("poll_timeout_ms"), 1000)),
             max_poll_records=max(1, _as_int(consumer_raw.get("max_poll_records"), 500)),
             auto_offset_reset=str(consumer_raw.get("auto_offset_reset", "earliest")),
         ),

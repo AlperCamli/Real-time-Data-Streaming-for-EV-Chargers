@@ -1,0 +1,138 @@
+{
+  "mode": "benchmark",
+  "producer": {
+    "producer_id": "simulator-loadtest-1k",
+    "schema_version": "1.0",
+    "seed": 77,
+    "dry_run": false,
+    "linger_ms": 20,
+    "batch_size": 262144,
+    "compression_type": "gzip",
+    "acks": "1",
+    "request_timeout_ms": 15000
+  },
+  "network": {
+    "station_count": 1800,
+    "connector_count_distribution": {
+      "2": 0.10,
+      "3": 0.30,
+      "4": 0.60
+    },
+    "operator_distribution": [
+      {
+        "operator_id": "operator-north",
+        "weight": 0.40
+      },
+      {
+        "operator_id": "operator-south",
+        "weight": 0.35
+      },
+      {
+        "operator_id": "operator-west",
+        "weight": 0.25
+      }
+    ],
+    "geography_distribution": [
+      {
+        "city": "Seattle",
+        "country": "US",
+        "latitude": 47.6062,
+        "longitude": -122.3321,
+        "weight": 0.15
+      },
+      {
+        "city": "San Francisco",
+        "country": "US",
+        "latitude": 37.7749,
+        "longitude": -122.4194,
+        "weight": 0.20
+      },
+      {
+        "city": "Los Angeles",
+        "country": "US",
+        "latitude": 34.0522,
+        "longitude": -118.2437,
+        "weight": 0.20
+      },
+      {
+        "city": "Dallas",
+        "country": "US",
+        "latitude": 32.7767,
+        "longitude": -96.797,
+        "weight": 0.15
+      },
+      {
+        "city": "Chicago",
+        "country": "US",
+        "latitude": 41.8781,
+        "longitude": -87.6298,
+        "weight": 0.15
+      },
+      {
+        "city": "New York",
+        "country": "US",
+        "latitude": 40.7128,
+        "longitude": -74.006,
+        "weight": 0.15
+      }
+    ],
+    "vehicle_brand_distribution": {
+      "Tesla": 0.30,
+      "Ford": 0.16,
+      "BMW": 0.12,
+      "Hyundai": 0.16,
+      "Rivian": 0.11,
+      "Nissan": 0.15
+    },
+    "heartbeat_interval_seconds": 20,
+    "target_event_rate": 1000,
+    "tick_interval_seconds": 0.1
+  },
+  "demand": {
+    "base_session_start_rate_per_idle_connector_minute": 0.45,
+    "morning_peak": {
+      "start_hour": 7,
+      "end_hour": 10,
+      "multiplier": 1.9
+    },
+    "evening_peak": {
+      "start_hour": 17,
+      "end_hour": 22,
+      "multiplier": 2.3
+    }
+  },
+  "session": {
+    "min_duration_minutes": 20,
+    "mode_duration_minutes": 45,
+    "max_duration_minutes": 150,
+    "meter_update_interval_seconds_min": 0.5,
+    "meter_update_interval_seconds_max": 2.0,
+    "target_soc_percent_min": 76,
+    "target_soc_percent_max": 96
+  },
+  "faults": {
+    "fault_rate_per_connector_hour": 0.002,
+    "recovery_seconds_min": 120,
+    "recovery_seconds_max": 900,
+    "severity_weights": {
+      "low": 0.65,
+      "medium": 0.25,
+      "high": 0.10
+    }
+  },
+  "data_quality": {
+    "duplicate_injection_rate": 0.002,
+    "out_of_order_injection_rate": 0.008,
+    "too_late_injection_rate": 0.003,
+    "too_late_threshold_seconds": 600,
+    "out_of_order_delay_seconds_min": 0.4,
+    "out_of_order_delay_seconds_max": 2.0
+  },
+  "benchmark": {
+    "enabled": true,
+    "sustained_mode": true,
+    "burst_mode": false,
+    "burst_multiplier": 1.5,
+    "burst_cycle_seconds": 60
+  }
+}

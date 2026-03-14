@@ -95,18 +95,21 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
     └── integration/
 ```
 
-## Local Infra Startup
+## Local Startup (Docker-First)
 1. Copy env file:
    - `cp .env.example .env`
-2. Start core infra:
-   - `docker compose up -d zookeeper kafka kafka-init redis clickhouse`
-3. Start optional observability:
+2. Start full pipeline (infra + processor + simulator):
+   - `docker compose up -d --build`
+3. Start optional observability stack:
    - `docker compose --profile observability up -d prometheus grafana`
 
-If you customize `.env` values and run Python services from your host shell, export them first:
-- `set -a; source .env; set +a`
+Runtime checks:
+- `docker compose ps`
+- `docker logs -f cs-processor`
+- `docker logs -f cs-simulator`
+- Prometheus targets: `http://localhost:9090/targets`
 
-## Python Dependencies
+## Python Dependencies (Optional for Host-Run)
 - Recommended isolated env:
   - `python3 -m venv .venv && source .venv/bin/activate`
 - `pip install kafka-python`
@@ -115,7 +118,7 @@ If you customize `.env` values and run Python services from your host shell, exp
 - Optional for YAML-native config files: `pip install pyyaml`
 - Optional for metrics endpoints: `pip install prometheus-client`
 
-## Service Entry Points
+## Service Entry Points (Host-Run Fallback)
 - Simulator:
   - `python -m src.simulator.main --config config/simulator.default.yaml`
   - smoke test: `python -m src.simulator.main --config config/simulator.default.yaml --max-runtime-seconds 20`
@@ -134,6 +137,65 @@ If you customize `.env` values and run Python services from your host shell, exp
   - `python -m src.benchmarks.run --profile config/benchmarks/10k.yaml --skip-query-benchmark`
 - Launch simulator+processor from the runner:
   - `python -m src.benchmarks.run --profile config/benchmarks/50k.yaml --launch-services`
+
+## Heavy Load Profiles (1k / 10k / 100k EPS)
+Available load profiles:
+
+- 1k EPS sustained:
+  - simulator: `config/simulator.loadtest.1k.yaml`
+  - processor: `config/processor.loadtest.1k.yaml`
+  - compose override: `docker-compose.loadtest.yml`
+- 10k EPS sustained target:
+  - simulator: `config/simulator.loadtest.10k.yaml`
+  - processor: `config/processor.loadtest.10k.yaml`
+  - compose override: `docker-compose.loadtest.10k.yml`
+- 100k EPS stress target:
+  - simulator: `config/simulator.loadtest.100k.yaml`
+  - processor: `config/processor.loadtest.100k.yaml`
+  - compose override: `docker-compose.loadtest.100k.yml`
+
+Run commands:
+
+- 1k: `docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d --build`
+- 10k: `docker compose -f docker-compose.yml -f docker-compose.loadtest.10k.yml up -d --build`
+- 100k: `docker compose -f docker-compose.yml -f docker-compose.loadtest.100k.yml up -d --build`
+
+How to configure/tune each tier:
+
+- Simulator knobs:
+  - `network.target_event_rate`: requested EPS target.
+  - `network.station_count` and `network.connector_count_distribution`: capacity ceiling.
+  - `network.tick_interval_seconds`: scheduling resolution.
+  - `demand.base_session_start_rate_per_idle_connector_minute`: pressure for new sessions.
+  - `session.meter_update_interval_seconds_min/max`: update frequency for active sessions.
+- Processor knobs:
+  - `consumer.max_poll_records`: records per poll.
+  - `consumer.poll_timeout_ms`: loop wait time (lower = more responsive, higher CPU).
+  - `sinks.clickhouse_batch_size` and `sinks.clickhouse_flush_interval_seconds`: sink throughput vs latency.
+  - `sinks.kafka_batch_size`: throughput for DLQ/late topic writes.
+
+How to decide if a load test is successful:
+
+1. Let the system warm up 2 minutes, then observe at least 10 minutes.
+2. Track Prometheus queries:
+   - `rate(events_generated_total[1m])`
+   - `rate(events_accepted_total[1m])`
+   - `rate(events_accepted_total[1m]) / clamp_min(rate(events_generated_total[1m]), 1)`
+   - `kafka_consumer_lag`
+   - `deriv(kafka_consumer_lag[5m])`
+   - `increase(clickhouse_insert_failures_total[10m])`
+3. Judge result with this rubric:
+   - PASS: accepted EPS is >=80% of tier target, acceptance ratio is >=0.90, lag derivative stays near 0 (or negative), and insert failures do not grow.
+   - PARTIAL: accepted EPS is 50-80% of target or lag grows slowly but system remains stable (no crash loop).
+   - FAIL: accepted EPS <50% of target, lag grows steeply for the full window, or services repeatedly restart.
+
+Notes:
+- 100k is a stress profile for bottleneck discovery and may not be fully reachable on a laptop.
+- If lag grows persistently, increase processor sink batch sizes or reduce simulator intensity.
+
+Quick data validation:
+- `http://localhost:8123/?user=default&password=password&query=SELECT%20count()%20FROM%20raw_events`
+- `http://localhost:8123/?user=default&password=password&query=SELECT%20count()%20FROM%20agg_station_minute`
 
 Benchmark outputs are written under:
 - `benchmark_results/runs/<run_id>/result.json`
@@ -178,3 +240,16 @@ Benchmark outputs are written under:
 ## Deferred To Later Phases
 - Advanced retro-correction and backfill/recompute workflows
 - Final polished dashboard design and submission narrative
+
+## Troubleshooting
+- `http://localhost:8123/` returning `OK` is expected. ClickHouse HTTP uses `/?query=...`.
+- ClickHouse Prometheus metrics are exposed on `http://localhost:9363/metrics`.
+- In Docker-first mode, Prometheus scrapes `simulator:9200` and `processor:9100` over the compose network.
+- If targets are down, confirm the app containers are running:
+  - `docker compose ps`
+  - `docker logs --tail=100 cs-processor`
+  - `docker logs --tail=100 cs-simulator`
+- If processor consumes but accepts `0` with high `too_late_rejected_total`, you are likely replaying stale Kafka history.
+  - test-only reset (deletes ClickHouse/Grafana volumes and restarts clean):
+  - `docker compose down -v --remove-orphans`
+  - `docker compose up -d --build`

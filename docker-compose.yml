@@ -1,4 +1,3 @@
-
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
@@ -16,6 +15,12 @@ services:
       - zookeeper
     ports:
       - "29092:29092"
+    healthcheck:
+      test: ["CMD-SHELL", "cub kafka-ready -b localhost:9092 1 20 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -30,7 +35,8 @@ services:
     image: confluentinc/cp-kafka:7.6.1
     container_name: cs-kafka-init
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     restart: "no"
     command: >
       bash -c "
@@ -46,6 +52,12 @@ services:
     ports:
       - "6379:6379"
     command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
@@ -62,11 +74,81 @@ services:
       - clickhouse_data:/var/lib/clickhouse
       - ./sql/clickhouse:/docker-entrypoint-initdb.d
       - ./config/clickhouse/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "clickhouse-client --host localhost --port 9000 --user ${CLICKHOUSE_USER:-default} --password ${CLICKHOUSE_PASSWORD:-password} --query 'SELECT 1' >/dev/null 2>&1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chargesquare-app:latest
+    container_name: cs-processor
+    restart: unless-stopped
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    command: ["sh", "-c", "python -m src.processor.main --config $${PROCESSOR_CONFIG_PATH:-config/processor.default.yaml}"]
+    environment:
+      APP_ENV: ${APP_ENV:-local}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON: ${LOG_JSON:-false}
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+      METRICS_HOST: 0.0.0.0
+      PROCESSOR_METRICS_PORT: ${PROCESSOR_METRICS_PORT:-9100}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC_RAW: ${KAFKA_TOPIC_RAW:-cs.ev.events.raw}
+      KAFKA_TOPIC_DLQ: ${KAFKA_TOPIC_DLQ:-cs.ev.events.dlq}
+      KAFKA_TOPIC_LATE: ${KAFKA_TOPIC_LATE:-cs.ev.events.late}
+      KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-cs-processor}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: ${REDIS_DB:-0}
+      DEDUP_TTL_SECONDS: ${DEDUP_TTL_SECONDS:-86400}
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-password}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-default}
+    ports:
+      - "9100:9100"
+
+  simulator:
+    image: chargesquare-app:latest
+    container_name: cs-simulator
+    restart: unless-stopped
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    command: ["sh", "-c", "python -m src.simulator.main --config $${SIMULATOR_CONFIG_PATH:-config/simulator.default.yaml}"]
+    environment:
+      APP_ENV: ${APP_ENV:-local}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON: ${LOG_JSON:-false}
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+      METRICS_HOST: 0.0.0.0
+      SIMULATOR_METRICS_PORT: ${SIMULATOR_METRICS_PORT:-9200}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC_RAW: ${KAFKA_TOPIC_RAW:-cs.ev.events.raw}
+      KAFKA_TOPIC_DLQ: ${KAFKA_TOPIC_DLQ:-cs.ev.events.dlq}
+      KAFKA_TOPIC_LATE: ${KAFKA_TOPIC_LATE:-cs.ev.events.late}
+    ports:
+      - "9200:9200"
 
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: cs-prometheus
-    profiles: ["observability"]
     ports:
       - "9090:9090"
     volumes:
@@ -75,7 +157,6 @@ services:
   grafana:
     image: grafana/grafana-oss:11.2.0
     container_name: cs-grafana
-    profiles: ["observability"]
     depends_on:
       - prometheus
     ports:
