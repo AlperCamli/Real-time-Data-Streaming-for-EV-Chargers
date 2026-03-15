@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+from src.benchmarks.profiles import load_benchmark_profile
+from src.common.settings import load_yaml_config
+from src.processor.config import build_processor_config
+
+
+class ConfigWiringTests(unittest.TestCase):
+    def test_10k_processor_config_exists_and_parses(self) -> None:
+        config_path = Path("config/processor.loadtest.10k.yaml")
+        self.assertTrue(config_path.exists())
+
+        raw = load_yaml_config(config_path)
+        config = build_processor_config(raw, _service_settings_fixture())
+
+        self.assertEqual(config.consumer.max_poll_records, 20000)
+        self.assertEqual(config.sinks.clickhouse_batch_size, 10000)
+        self.assertEqual(config.sinks.kafka_batch_size, 5000)
+        self.assertEqual(config.sinks.max_pending_batches, 4)
+
+    def test_100k_processor_config_exists_and_uses_relaxed_flush_intervals(self) -> None:
+        config_path = Path("config/processor.loadtest.100k.yaml")
+        self.assertTrue(config_path.exists())
+
+        raw = load_yaml_config(config_path)
+        config = build_processor_config(raw, _service_settings_fixture())
+
+        self.assertEqual(config.sinks.clickhouse_flush_interval_seconds, 0.5)
+        self.assertEqual(config.sinks.flush_interval_seconds, 0.5)
+
+    def test_10k_benchmark_profile_uses_10k_processor_config(self) -> None:
+        profile = load_benchmark_profile(Path("config/benchmarks/10k.yaml"))
+        self.assertEqual(profile.processor_config, "config/processor.loadtest.10k.yaml")
+
+    def test_100k_benchmark_profile_uses_100k_loadtest_configs(self) -> None:
+        profile = load_benchmark_profile(Path("config/benchmarks/100k.yaml"))
+        self.assertEqual(profile.simulator_config, "config/simulator.loadtest.100k.yaml")
+        self.assertEqual(profile.processor_config, "config/processor.loadtest.100k.yaml")
+
+    def test_10k_compose_override_points_to_existing_processor_config_and_disables_redis_persistence(self) -> None:
+        compose_text = Path("docker-compose.loadtest.10k.yml").read_text(encoding="utf-8")
+        self.assertIn("PROCESSOR_CONFIG_PATH: config/processor.loadtest.10k.yaml", compose_text)
+        self.assertTrue(Path("config/processor.loadtest.10k.yaml").exists())
+        self.assertIn('command: ["redis-server", "--appendonly", "no", "--save", ""]', compose_text)
+
+
+def _service_settings_fixture():
+    from src.common.settings import ClickHouseSettings, KafkaSettings, RedisSettings, ServiceSettings
+
+    return ServiceSettings(
+        service_name="processor",
+        environment="test",
+        log_level="INFO",
+        log_json=False,
+        metrics_enabled=False,
+        metrics_host="0.0.0.0",
+        metrics_port=9100,
+        kafka=KafkaSettings(
+            bootstrap_servers="localhost:29092",
+            topic_raw="cs.ev.events.raw",
+            topic_dlq="cs.ev.events.dlq",
+            topic_late="cs.ev.events.late",
+            consumer_group="cs-processor",
+        ),
+        redis=RedisSettings(host="localhost", port=6379, db=0, dedup_ttl_seconds=86400),
+        clickhouse=ClickHouseSettings(host="localhost", port=9000, user="default", password="password", database="default"),
+    )
+
+
+if __name__ == "__main__":
+    unittest.main()

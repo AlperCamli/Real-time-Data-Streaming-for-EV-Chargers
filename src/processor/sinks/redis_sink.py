@@ -12,6 +12,7 @@ from src.common.redis_keys import connector_state_key, session_state_key, statio
 from src.common.settings import RedisSettings
 from src.common.schemas.event_envelope import EventEnvelope
 from src.common.schemas.event_payloads import FaultAlertPayload, HeartbeatPayload, MeterUpdatePayload, SessionStopPayload, StatusChangePayload
+from src.processor.models import RedisBatchInput, RedisMutation
 from src.processor.state.session_state import SessionSnapshot
 
 
@@ -53,8 +54,12 @@ local current = redis.call('HGET', KEYS[1], 'last_event_time_ms')
 if current and tonumber(current) >= tonumber(ARGV[1]) then
   return 0
 end
-for i = 2, #ARGV, 2 do
+for i = 3, #ARGV, 2 do
   redis.call('HSET', KEYS[1], ARGV[i], ARGV[i + 1])
+end
+local ttl = tonumber(ARGV[2])
+if ttl and ttl > 0 then
+  redis.call('EXPIRE', KEYS[1], ttl)
 end
 return 1
 """
@@ -73,17 +78,15 @@ return 1
         self._finalized_session_ttl_seconds = max(60, finalized_session_ttl_seconds)
         self._inmemory_state: dict[str, dict[str, str]] = {}
 
-    def apply_event(
+    def build_event_mutations(
         self,
         event: EventEnvelope,
         *,
         session_snapshot: SessionSnapshot | None = None,
         session_mutation_applied: bool = False,
         active_session_count: int = 0,
-    ) -> RedisApplyResult:
-        started = time.monotonic()
-        result = RedisApplyResult()
-
+    ) -> list[RedisMutation]:
+        mutations: list[RedisMutation] = []
         station_status = _derive_station_status(event)
         connector_status = _derive_connector_status(event)
         fault_flag = 1 if _is_faulted(station_status) else 0
@@ -109,13 +112,17 @@ return 1
         if event.event_type == EventType.HEARTBEAT:
             station_fields["last_heartbeat_time"] = event.event_time.astimezone(timezone.utc).isoformat()
 
-        self._apply_key(
-            result=result,
-            key=station_state_key(event.station_id),
-            event_time=event.event_time,
-            fields=station_fields,
-            ttl_seconds=None,
+        mutations.append(
+            RedisMutation(
+                key=station_state_key(event.station_id),
+                event_time=event.event_time,
+                fields=station_fields,
+                ttl_seconds=None,
+            )
         )
+
+        if event.event_type == EventType.HEARTBEAT:
+            return mutations
 
         should_update_connector = not (event.event_type == EventType.HEARTBEAT and event.connector_id == "0")
         if should_update_connector:
@@ -138,12 +145,13 @@ return 1
             if event.event_type == EventType.METER_UPDATE and session_mutation_applied:
                 connector_fields["last_meter_time"] = event.event_time.astimezone(timezone.utc).isoformat()
 
-            self._apply_key(
-                result=result,
-                key=connector_state_key(event.station_id, event.connector_id),
-                event_time=event.event_time,
-                fields=connector_fields,
-                ttl_seconds=None,
+            mutations.append(
+                RedisMutation(
+                    key=connector_state_key(event.station_id, event.connector_id),
+                    event_time=event.event_time,
+                    fields=connector_fields,
+                    ttl_seconds=None,
+                )
             )
 
         if event.session_id and session_snapshot is not None:
@@ -152,93 +160,170 @@ return 1
                 ttl_seconds = self._session_state_ttl_seconds
                 if session_snapshot.finalized_reason:
                     ttl_seconds = self._finalized_session_ttl_seconds
-                self._apply_key(
-                    result=result,
-                    key=session_state_key(event.session_id),
-                    event_time=event.event_time,
-                    fields=session_fields,
-                    ttl_seconds=ttl_seconds,
+                mutations.append(
+                    RedisMutation(
+                        key=session_state_key(event.session_id),
+                        event_time=event.event_time,
+                        fields=session_fields,
+                        ttl_seconds=ttl_seconds,
+                    )
                 )
 
-        result.latency_seconds = max(0.0, time.monotonic() - started)
-        return result
+        return mutations
 
-    def finalize_timeout_session(self, snapshot: SessionSnapshot, *, active_session_count: int) -> RedisApplyResult:
-        started = time.monotonic()
+    def build_timeout_finalization_mutations(
+        self,
+        snapshot: SessionSnapshot,
+        *,
+        active_session_count: int,
+    ) -> list[RedisMutation]:
         ended_at = snapshot.ended_at or snapshot.last_event_time
         guard_time = datetime.now(timezone.utc)
+        return [
+            RedisMutation(
+                key=station_state_key(snapshot.station_id),
+                event_time=guard_time,
+                fields={
+                    "station_id": snapshot.station_id,
+                    "last_event_time": ended_at.astimezone(timezone.utc).isoformat(),
+                    "last_ingest_time": guard_time.isoformat(),
+                    "operator_id": snapshot.operator_id,
+                    "current_status": "available",
+                    "active_session_count": max(0, active_session_count),
+                    "fault_flag": 0,
+                    "city": snapshot.location_city or "",
+                    "country": snapshot.location_country or "",
+                },
+                ttl_seconds=None,
+            ),
+            RedisMutation(
+                key=connector_state_key(snapshot.station_id, snapshot.connector_id),
+                event_time=guard_time,
+                fields={
+                    "station_id": snapshot.station_id,
+                    "connector_id": snapshot.connector_id,
+                    "operator_id": snapshot.operator_id,
+                    "last_event_time": ended_at.astimezone(timezone.utc).isoformat(),
+                    "status": "available",
+                    "session_id": "",
+                    "power_kw": 0.0,
+                    "energy_kwh_last": max(0.0, snapshot.latest_meter_kwh),
+                    "vehicle_brand": snapshot.vehicle_brand or "",
+                    "fault_code": "",
+                },
+                ttl_seconds=None,
+            ),
+            RedisMutation(
+                key=session_state_key(snapshot.session_id),
+                event_time=guard_time,
+                fields=_session_fields(snapshot),
+                ttl_seconds=self._finalized_session_ttl_seconds,
+            ),
+        ]
+
+    def build_mutations_for_inputs(self, inputs: list[RedisBatchInput]) -> list[RedisMutation]:
+        mutations: list[RedisMutation] = []
+        for item in inputs:
+            mutations.extend(
+                self.build_event_mutations(
+                    item.event,
+                    session_snapshot=item.session_snapshot,
+                    session_mutation_applied=item.session_mutation_applied,
+                    active_session_count=item.active_session_count,
+                )
+            )
+        return mutations
+
+    def apply_mutations(self, mutations: list[RedisMutation]) -> RedisApplyResult:
+        started = time.monotonic()
         result = RedisApplyResult()
+        coalesced = self._coalesce_mutations(mutations)
+        if not coalesced:
+            return result
 
-        self._apply_key(
-            result=result,
-            key=station_state_key(snapshot.station_id),
-            event_time=guard_time,
-            fields={
-                "station_id": snapshot.station_id,
-                "last_event_time": ended_at.astimezone(timezone.utc).isoformat(),
-                "last_ingest_time": guard_time.isoformat(),
-                "operator_id": snapshot.operator_id,
-                "current_status": "available",
-                "active_session_count": max(0, active_session_count),
-                "fault_flag": 0,
-                "city": snapshot.location_city or "",
-                "country": snapshot.location_country or "",
-            },
-            ttl_seconds=None,
-        )
-
-        self._apply_key(
-            result=result,
-            key=connector_state_key(snapshot.station_id, snapshot.connector_id),
-            event_time=guard_time,
-            fields={
-                "station_id": snapshot.station_id,
-                "connector_id": snapshot.connector_id,
-                "operator_id": snapshot.operator_id,
-                "last_event_time": ended_at.astimezone(timezone.utc).isoformat(),
-                "status": "available",
-                "session_id": "",
-                "power_kw": 0.0,
-                "energy_kwh_last": max(0.0, snapshot.latest_meter_kwh),
-                "vehicle_brand": snapshot.vehicle_brand or "",
-                "fault_code": "",
-            },
-            ttl_seconds=None,
-        )
-
-        self._apply_key(
-            result=result,
-            key=session_state_key(snapshot.session_id),
-            event_time=guard_time,
-            fields=_session_fields(snapshot),
-            ttl_seconds=self._finalized_session_ttl_seconds,
-        )
+        if self._redis is None:
+            for mutation in coalesced:
+                status = self._write_if_newer(
+                    key=mutation.key,
+                    event_time=mutation.event_time,
+                    fields=mutation.fields,
+                    ttl_seconds=mutation.ttl_seconds,
+                )
+                result.attempts += 1
+                if status == "applied":
+                    result.applied_keys += 1
+                elif status == "stale":
+                    result.stale_keys += 1
+                else:
+                    result.error_keys += 1
+        else:
+            self._pipeline_writes(coalesced, result)
 
         result.latency_seconds = max(0.0, time.monotonic() - started)
         return result
 
-    def _apply_key(
-        self,
-        *,
-        result: RedisApplyResult,
-        key: str,
-        event_time: datetime,
-        fields: dict[str, object],
-        ttl_seconds: int | None,
-    ) -> None:
-        status = self._write_if_newer(
-            key=key,
-            event_time=event_time,
-            fields=fields,
-            ttl_seconds=ttl_seconds,
-        )
-        result.attempts += 1
-        if status == "applied":
-            result.applied_keys += 1
-        elif status == "stale":
-            result.stale_keys += 1
-        else:
-            result.error_keys += 1
+    def apply_events_batch(self, inputs: list[RedisBatchInput]) -> RedisApplyResult:
+        return self.apply_mutations(self.build_mutations_for_inputs(inputs))
+
+    def _pipeline_writes(self, pending: list[RedisMutation], result: RedisApplyResult) -> None:
+        if not pending:
+            return
+
+        try:
+            pipe = self._redis.pipeline(transaction=False)
+
+            for mutation in pending:
+                event_time_utc = mutation.event_time.astimezone(timezone.utc)
+                event_time_ms = int(event_time_utc.timestamp() * 1000)
+                redis_fields: dict[str, str] = {
+                    "last_event_time_ms": str(event_time_ms),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                for name, value in mutation.fields.items():
+                    redis_fields[name] = _as_redis_value(value)
+                ttl_seconds = int(mutation.ttl_seconds or 0)
+                argv: list[str] = [str(event_time_ms), str(ttl_seconds)]
+                for field_name, field_value in redis_fields.items():
+                    argv.append(field_name)
+                    argv.append(field_value)
+                pipe.eval(self._TIMESTAMP_GUARD_SCRIPT, 1, mutation.key, *argv)
+
+            eval_results = pipe.execute()
+
+            for eval_result in eval_results:
+                result.attempts += 1
+                try:
+                    applied = int(eval_result)
+                    if applied == 1:
+                        result.applied_keys += 1
+                    else:
+                        result.stale_keys += 1
+                except Exception:  # noqa: BLE001
+                    result.error_keys += 1
+        except Exception as exc:  # noqa: BLE001
+            self._logger.error(
+                "processor_redis_batch_write_failed",
+                extra={"batch_size": len(pending), "error": str(exc)},
+            )
+            result.error_keys += len(pending)
+            result.attempts += len(pending)
+
+    def _coalesce_mutations(self, mutations: list[RedisMutation]) -> list[RedisMutation]:
+        latest_by_key: dict[str, tuple[int, RedisMutation]] = {}
+        for index, mutation in enumerate(mutations):
+            current = latest_by_key.get(mutation.key)
+            if current is None:
+                latest_by_key[mutation.key] = (index, mutation)
+                continue
+
+            _, existing = current
+            existing_ts = int(existing.event_time.astimezone(timezone.utc).timestamp() * 1000)
+            candidate_ts = int(mutation.event_time.astimezone(timezone.utc).timestamp() * 1000)
+            if candidate_ts > existing_ts or (candidate_ts == existing_ts and index >= current[0]):
+                latest_by_key[mutation.key] = (index, mutation)
+
+        coalesced = sorted(latest_by_key.values(), key=lambda item: item[0])
+        return [mutation for _, mutation in coalesced]
 
     def _write_if_newer(
         self,
@@ -267,15 +352,13 @@ return 1
             self._inmemory_state[key] = redis_fields
             return "applied"
 
-        argv: list[str] = [str(event_time_ms)]
+        argv: list[str] = [str(event_time_ms), str(int(ttl_seconds or 0))]
         for field_name, field_value in redis_fields.items():
             argv.append(field_name)
             argv.append(field_value)
 
         try:
             applied = int(self._redis.eval(self._TIMESTAMP_GUARD_SCRIPT, 1, key, *argv))
-            if applied == 1 and ttl_seconds is not None:
-                self._redis.expire(key, int(ttl_seconds))
             return "applied" if applied == 1 else "stale"
         except Exception as exc:  # noqa: BLE001
             self._logger.error(

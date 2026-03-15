@@ -22,10 +22,11 @@
     "default_tariff_eur_per_kwh": 0.35
   },
   "sinks": {
-    "clickhouse_batch_size": 8000,
-    "clickhouse_flush_interval_seconds": 0.2,
-    "kafka_batch_size": 3000,
-    "flush_interval_seconds": 0.2,
+    "clickhouse_batch_size": 10000,
+    "clickhouse_flush_interval_seconds": 0.5,
+    "kafka_batch_size": 5000,
+    "flush_interval_seconds": 0.5,
+    "max_pending_batches": 4,
     "redis_session_state_ttl_seconds": 86400,
     "redis_finalized_session_ttl_seconds": 3600
   }

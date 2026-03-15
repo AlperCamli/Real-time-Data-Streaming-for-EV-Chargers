@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -16,29 +17,36 @@ class KafkaJsonTopicSink:
         topic: str,
         logger: logging.Logger,
         batch_size: int = 200,
+        flush_interval_seconds: float = 1.0,
+        producer_client: object | None = None,
     ) -> None:
         self._topic = topic
         self._logger = logger
         self._batch_size = max(1, batch_size)
+        self._flush_interval_seconds = max(0.1, flush_interval_seconds)
         self._queue: list[dict[str, Any]] = []
+        self._last_flush_monotonic = time.monotonic()
 
-        try:
-            from kafka import KafkaProducer  # type: ignore
-        except ModuleNotFoundError as exc:
-            raise RuntimeError(
-                "kafka-python is required for processor Kafka sinks. "
-                "Install with: pip install kafka-python"
-            ) from exc
+        if producer_client is not None:
+            self._producer = producer_client
+        else:
+            try:
+                from kafka import KafkaProducer  # type: ignore
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "kafka-python is required for processor Kafka sinks. "
+                    "Install with: pip install kafka-python"
+                ) from exc
 
-        self._producer = KafkaProducer(
-            bootstrap_servers=bootstrap_servers,
-            linger_ms=25,
-            batch_size=64 * 1024,
-            acks="all",
-            retries=3,
-            value_serializer=lambda payload: json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8"),
-            key_serializer=lambda key: key.encode("utf-8"),
-        )
+            self._producer = KafkaProducer(
+                bootstrap_servers=bootstrap_servers,
+                linger_ms=25,
+                batch_size=64 * 1024,
+                acks="all",
+                retries=3,
+                value_serializer=lambda payload: json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8"),
+                key_serializer=lambda key: key.encode("utf-8"),
+            )
 
     def enqueue(self, payload: Mapping[str, Any], key: str = "") -> None:
         event = dict(payload)
@@ -50,7 +58,7 @@ class KafkaJsonTopicSink:
     def flush(self, force: bool = False) -> int:
         if not self._queue:
             return 0
-        if not force and len(self._queue) < self._batch_size:
+        if not force and len(self._queue) < self._batch_size and (time.monotonic() - self._last_flush_monotonic) < self._flush_interval_seconds:
             return 0
 
         queued = self._queue
@@ -67,6 +75,7 @@ class KafkaJsonTopicSink:
             sent_count += 1
 
         self._producer.flush(timeout=10.0)
+        self._last_flush_monotonic = time.monotonic()
         return sent_count
 
     def close(self) -> None:

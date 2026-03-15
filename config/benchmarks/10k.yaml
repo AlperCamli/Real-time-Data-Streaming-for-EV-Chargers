@@ -18,7 +18,7 @@
   },
   "services": {
     "simulator_config": "config/simulator.benchmark.yaml",
-    "processor_config": "config/processor.default.yaml"
+    "processor_config": "config/processor.loadtest.10k.yaml"
   },
   "launch_services": false,
   "notes": "Main sustained credibility tier for local benchmark evidence."

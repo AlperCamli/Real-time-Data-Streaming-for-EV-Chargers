@@ -17,8 +17,8 @@
     "too_late_threshold_seconds": 600
   },
   "services": {
-    "simulator_config": "config/simulator.benchmark.yaml",
-    "processor_config": "config/processor.default.yaml"
+    "simulator_config": "config/simulator.loadtest.100k.yaml",
+    "processor_config": "config/processor.loadtest.100k.yaml"
   },
   "launch_services": false,
   "notes": "Stress ceiling tier; do not claim sustained success without explicit extended measurements."

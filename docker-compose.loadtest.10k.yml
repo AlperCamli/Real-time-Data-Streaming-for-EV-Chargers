@@ -1,4 +1,7 @@
 services:
+  redis:
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+
   simulator:
     environment:
       SIMULATOR_CONFIG_PATH: config/simulator.loadtest.10k.yaml

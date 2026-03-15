@@ -189,103 +189,21 @@ class ClickHouseSink:
         self._client = self._build_client(settings)
 
     def enqueue_raw_event(self, event: EventEnvelope) -> None:
-        payload_json = json.dumps(payload_to_dict(event.payload), separators=(",", ":"), ensure_ascii=True)
-        self._queues[TABLE_RAW_EVENTS].append(
-            (
-                event.event_id,
-                event.event_type.value,
-                event.event_time,
-                event.ingest_time,
-                event.station_id,
-                event.connector_id,
-                event.operator_id,
-                event.session_id,
-                event.schema_version,
-                event.producer_id,
-                event.sequence_no,
-                event.location.city,
-                event.location.country,
-                event.location.latitude,
-                event.location.longitude,
-                payload_json,
-            )
-        )
+        self._queues[TABLE_RAW_EVENTS].append(self.build_raw_event_row(event))
 
     def enqueue_dead_letter(self, record: DeadLetterRecord) -> None:
-        self._queues[TABLE_DEAD_LETTER_EVENTS].append(
-            (
-                record.event_id,
-                record.event_type,
-                record.event_time,
-                record.ingest_time or record.failed_at,
-                record.station_id,
-                record.connector_id,
-                record.operator_id,
-                record.session_id,
-                record.schema_version,
-                record.producer_id,
-                record.sequence_no,
-                record.error_reason,
-                record.raw_payload_json,
-                record.failed_at,
-            )
-        )
+        self._queues[TABLE_DEAD_LETTER_EVENTS].append(self.build_dead_letter_row(record))
 
     def enqueue_late_rejected(self, event: EventEnvelope, lateness_seconds: int) -> None:
-        payload_json = json.dumps(payload_to_dict(event.payload), separators=(",", ":"), ensure_ascii=True)
-        self._queues[TABLE_LATE_EVENTS_REJECTED].append(
-            (
-                event.event_id,
-                event.event_type.value,
-                event.event_time,
-                event.ingest_time,
-                event.station_id,
-                event.connector_id,
-                event.operator_id,
-                event.session_id,
-                event.schema_version,
-                event.producer_id,
-                event.sequence_no,
-                max(0, lateness_seconds),
-                payload_json,
-                "too_late_rejected",
-                datetime.now(timezone.utc),
-            )
-        )
+        self._queues[TABLE_LATE_EVENTS_REJECTED].append(self.build_late_rejected_row(event, lateness_seconds))
 
     def enqueue_fact_session(self, fact: FinalizedSessionFact) -> None:
-        self._queues[TABLE_FACT_SESSIONS].append(
-            (
-                fact.session_id,
-                fact.operator_id,
-                fact.station_id,
-                fact.connector_id,
-                fact.session_start_time,
-                fact.session_end_time,
-                fact.location_city,
-                fact.location_country,
-                fact.vehicle_brand,
-                fact.vehicle_model,
-                fact.tariff_id,
-                fact.duration_seconds,
-                fact.energy_kwh_total,
-                fact.revenue_eur_total,
-                fact.meter_update_count,
-                fact.peak_power_kw,
-                fact.avg_power_kw,
-                fact.session_completion_status,
-                fact.final_station_status,
-                fact.stop_reason,
-                fact.is_complete,
-                fact.is_timeout_finalized,
-                fact.peak_hour_flag,
-                fact.revenue_per_kwh,
-                fact.start_event_id,
-                fact.stop_event_id,
-                fact.finalized_reason,
-                fact.finalized_at,
-            )
-        )
+        self._queues[TABLE_FACT_SESSIONS].append(self.build_fact_session_row(fact))
+
+    def enqueue_rows_by_table(self, rows_by_table: dict[str, list[tuple[object, ...]]]) -> None:
+        for table, rows in rows_by_table.items():
+            if rows and table in self._queues:
+                self._queues[table].extend(rows)
 
     def enqueue_agg_station_minute_rows(self, rows: list[tuple[object, ...]]) -> None:
         if rows:
@@ -330,6 +248,101 @@ class ClickHouseSink:
 
     def close(self) -> None:
         self.flush(force=True)
+
+    @staticmethod
+    def build_raw_event_row(event: EventEnvelope) -> tuple[object, ...]:
+        payload_json = json.dumps(payload_to_dict(event.payload), separators=(",", ":"), ensure_ascii=True)
+        return (
+            event.event_id,
+            event.event_type.value,
+            event.event_time,
+            event.ingest_time,
+            event.station_id,
+            event.connector_id,
+            event.operator_id,
+            event.session_id,
+            event.schema_version,
+            event.producer_id,
+            event.sequence_no,
+            event.location.city,
+            event.location.country,
+            event.location.latitude,
+            event.location.longitude,
+            payload_json,
+        )
+
+    @staticmethod
+    def build_dead_letter_row(record: DeadLetterRecord) -> tuple[object, ...]:
+        return (
+            record.event_id,
+            record.event_type,
+            record.event_time,
+            record.ingest_time or record.failed_at,
+            record.station_id,
+            record.connector_id,
+            record.operator_id,
+            record.session_id,
+            record.schema_version,
+            record.producer_id,
+            record.sequence_no,
+            record.error_reason,
+            record.raw_payload_json,
+            record.failed_at,
+        )
+
+    @staticmethod
+    def build_late_rejected_row(event: EventEnvelope, lateness_seconds: int) -> tuple[object, ...]:
+        payload_json = json.dumps(payload_to_dict(event.payload), separators=(",", ":"), ensure_ascii=True)
+        return (
+            event.event_id,
+            event.event_type.value,
+            event.event_time,
+            event.ingest_time,
+            event.station_id,
+            event.connector_id,
+            event.operator_id,
+            event.session_id,
+            event.schema_version,
+            event.producer_id,
+            event.sequence_no,
+            max(0, lateness_seconds),
+            payload_json,
+            "too_late_rejected",
+            datetime.now(timezone.utc),
+        )
+
+    @staticmethod
+    def build_fact_session_row(fact: FinalizedSessionFact) -> tuple[object, ...]:
+        return (
+            fact.session_id,
+            fact.operator_id,
+            fact.station_id,
+            fact.connector_id,
+            fact.session_start_time,
+            fact.session_end_time,
+            fact.location_city,
+            fact.location_country,
+            fact.vehicle_brand,
+            fact.vehicle_model,
+            fact.tariff_id,
+            fact.duration_seconds,
+            fact.energy_kwh_total,
+            fact.revenue_eur_total,
+            fact.meter_update_count,
+            fact.peak_power_kw,
+            fact.avg_power_kw,
+            fact.session_completion_status,
+            fact.final_station_status,
+            fact.stop_reason,
+            fact.is_complete,
+            fact.is_timeout_finalized,
+            fact.peak_hour_flag,
+            fact.revenue_per_kwh,
+            fact.start_event_id,
+            fact.stop_event_id,
+            fact.finalized_reason,
+            fact.finalized_at,
+        )
 
     def _build_client(self, settings: ClickHouseSettings) -> object | None:
         try:

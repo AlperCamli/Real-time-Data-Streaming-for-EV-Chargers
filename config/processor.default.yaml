@@ -26,6 +26,7 @@
     "clickhouse_flush_interval_seconds": 1.0,
     "kafka_batch_size": 200,
     "flush_interval_seconds": 1.0,
+    "max_pending_batches": 4,
     "redis_session_state_ttl_seconds": 86400,
     "redis_finalized_session_ttl_seconds": 3600
   }

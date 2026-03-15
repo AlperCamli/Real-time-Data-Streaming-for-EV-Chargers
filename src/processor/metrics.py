@@ -16,10 +16,12 @@ COUNTER_EVENTS_ACCEPTED = "events_accepted_total"
 COUNTER_PARSE_FAILURES = "parse_failures_total"
 COUNTER_SCHEMA_VALIDATION_FAILURES = "schema_validation_failures_total"
 COUNTER_SEMANTIC_VALIDATION_FAILURES = "semantic_validation_failures_total"
+COUNTER_SEMANTIC_WARNINGS = "semantic_warnings_total"
 COUNTER_DUPLICATES_DETECTED = "duplicates_detected_total"
 COUNTER_ACCEPTED_LATE = "accepted_late_events_total"
 COUNTER_TOO_LATE_REJECTED = "too_late_rejected_total"
 COUNTER_DLQ_ROUTED = "dead_letter_routed_total"
+COUNTER_SESSION_MUTATION_SKIPS = "session_mutation_skips_total"
 COUNTER_STALE_REDIS_WRITE_SKIPS = "stale_redis_write_skips_total"
 COUNTER_RAW_ROWS_WRITTEN = "clickhouse_raw_rows_written_total"
 COUNTER_DEAD_LETTER_ROWS_WRITTEN = "clickhouse_dead_letter_rows_written_total"
@@ -164,10 +166,12 @@ class ProcessorMetrics:
             COUNTER_PARSE_FAILURES: "Total parse failures",
             COUNTER_SCHEMA_VALIDATION_FAILURES: "Total schema validation failures",
             COUNTER_SEMANTIC_VALIDATION_FAILURES: "Total semantic validation failures",
+            COUNTER_SEMANTIC_WARNINGS: "Total semantic warnings aggregated by processor",
             COUNTER_DUPLICATES_DETECTED: "Total duplicates detected via dedup key",
             COUNTER_ACCEPTED_LATE: "Total late-but-accepted events",
             COUNTER_TOO_LATE_REJECTED: "Total too-late rejected events",
             COUNTER_DLQ_ROUTED: "Total events routed to dead letter",
+            COUNTER_SESSION_MUTATION_SKIPS: "Total accepted events that unexpectedly skipped a session mutation",
             COUNTER_STALE_REDIS_WRITE_SKIPS: "Total stale Redis writes skipped by timestamp guard",
             COUNTER_RAW_ROWS_WRITTEN: "Total raw event rows written to ClickHouse",
             COUNTER_DEAD_LETTER_ROWS_WRITTEN: "Total dead-letter rows written to ClickHouse",

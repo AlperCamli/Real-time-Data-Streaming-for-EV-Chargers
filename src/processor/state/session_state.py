@@ -63,6 +63,7 @@ class SessionMutationResult:
 class SessionStateStore:
     def __init__(self) -> None:
         self._sessions: dict[str, SessionSnapshot] = {}
+        self._station_sessions: dict[str, set[str]] = {}
         self._lock = Lock()
 
     def get_session(self, session_id: str | None) -> SessionSnapshot | None:
@@ -74,7 +75,7 @@ class SessionStateStore:
 
     def active_sessions_for_station(self, station_id: str) -> int:
         with self._lock:
-            return sum(1 for snapshot in self._sessions.values() if snapshot.station_id == station_id)
+            return len(self._station_sessions.get(station_id, set()))
 
     def apply_event(
         self,
@@ -119,6 +120,11 @@ class SessionStateStore:
             ]
             for session_id in stale_ids:
                 snapshot = self._sessions.pop(session_id)
+                station_sessions = self._station_sessions.get(snapshot.station_id)
+                if station_sessions is not None:
+                    station_sessions.discard(session_id)
+                    if not station_sessions:
+                        del self._station_sessions[snapshot.station_id]
                 finalized.append(
                     replace(
                         snapshot,
@@ -183,6 +189,9 @@ class SessionStateStore:
                 current_status="active",
             )
             self._sessions[event.session_id] = snapshot
+            if snapshot.station_id not in self._station_sessions:
+                self._station_sessions[snapshot.station_id] = set()
+            self._station_sessions[snapshot.station_id].add(snapshot.session_id)
             return SessionMutationResult(applied=True, reason="session_started", snapshot=replace(snapshot))
 
     def _update_session(self, event: EventEnvelope) -> SessionMutationResult:
@@ -235,6 +244,12 @@ class SessionStateStore:
             snapshot = self._sessions.pop(event.session_id, None)
             if snapshot is None:
                 return SessionMutationResult(applied=False, reason="session_not_found", snapshot=None)
+
+            station_sessions = self._station_sessions.get(snapshot.station_id)
+            if station_sessions is not None:
+                station_sessions.discard(snapshot.session_id)
+                if not station_sessions:
+                    del self._station_sessions[snapshot.station_id]
 
             updated_total_energy = snapshot.total_energy_kwh
             updated_latest_meter = snapshot.latest_meter_kwh

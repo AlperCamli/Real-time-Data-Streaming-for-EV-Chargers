@@ -42,6 +42,7 @@ class SinkConfig:
     clickhouse_flush_interval_seconds: float
     kafka_batch_size: int
     flush_interval_seconds: float
+    max_pending_batches: int
     redis_session_state_ttl_seconds: int
     redis_finalized_session_ttl_seconds: int
 
@@ -101,6 +102,7 @@ def build_processor_config(raw: Mapping[str, Any], service_settings: ServiceSett
             ),
             kafka_batch_size=max(1, _as_int(sinks_raw.get("kafka_batch_size"), 200)),
             flush_interval_seconds=max(0.1, _as_float(sinks_raw.get("flush_interval_seconds"), 1.0)),
+            max_pending_batches=max(1, _as_int(sinks_raw.get("max_pending_batches"), 4)),
             redis_session_state_ttl_seconds=max(60, _as_int(sinks_raw.get("redis_session_state_ttl_seconds"), 86400)),
             redis_finalized_session_ttl_seconds=max(
                 60,
