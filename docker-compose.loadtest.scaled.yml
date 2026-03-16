@@ -1,0 +1,51 @@
+x-processor-template: &processor-template
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: chargesquare-app:latest
+  restart: unless-stopped
+  depends_on:
+    kafka-init:
+      condition: service_completed_successfully
+    redis:
+      condition: service_healthy
+    clickhouse:
+      condition: service_healthy
+  command: ["sh", "-c", "python -m src.processor.main --config $${PROCESSOR_CONFIG_PATH:-config/processor.default.yaml}"]
+  environment:
+    APP_ENV: ${APP_ENV:-local}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    LOG_JSON: ${LOG_JSON:-false}
+    METRICS_ENABLED: ${METRICS_ENABLED:-true}
+    METRICS_HOST: 0.0.0.0
+    PROCESSOR_METRICS_PORT: ${PROCESSOR_METRICS_PORT:-9100}
+    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    KAFKA_TOPIC_RAW: ${KAFKA_TOPIC_RAW:-cs.ev.events.raw}
+    KAFKA_TOPIC_DLQ: ${KAFKA_TOPIC_DLQ:-cs.ev.events.dlq}
+    KAFKA_TOPIC_LATE: ${KAFKA_TOPIC_LATE:-cs.ev.events.late}
+    KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-cs-processor}
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+    REDIS_DB: ${REDIS_DB:-0}
+    DEDUP_TTL_SECONDS: ${DEDUP_TTL_SECONDS:-86400}
+    CLICKHOUSE_HOST: clickhouse
+    CLICKHOUSE_PORT: 9000
+    CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+    CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-password}
+    CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-default}
+
+services:
+  processor-b:
+    <<: *processor-template
+    container_name: cs-processor-b
+    ports: []
+
+  processor-c:
+    <<: *processor-template
+    container_name: cs-processor-c
+    ports: []
+
+  processor-d:
+    <<: *processor-template
+    container_name: cs-processor-d
+    ports: []

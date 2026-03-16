@@ -75,11 +75,11 @@ from src.processor.models import (
     SinkBatch,
     dead_letter_from_raw,
 )
-from src.processor.parser import ParseResult, parse_message_value
+from src.processor.parser import ParsedEventResult, parse_and_validate_message
 from src.processor.routing import route_invalid
 from src.processor.sinks import ClickHouseSink, KafkaDlqSink, KafkaJsonTopicSink, RedisApplyResult, RedisStateSink, build_redis_client
 from src.processor.state import SessionSnapshot, SessionStateStore
-from src.processor.validators import validate_envelope_schema, validate_event_semantics
+from src.processor.validators import validate_event_semantics
 
 
 DEFAULT_PROCESSOR_CONFIG_PATH = Path("config/processor.default.yaml")
@@ -248,9 +248,11 @@ class SinkWorker:
 
     def _flush_pending(self, batch: SinkBatch) -> None:
         try:
-            redis_mutations = list(batch.redis_mutations)
-            redis_mutations.extend(self._redis.build_mutations_for_inputs(batch.redis_inputs))
-            redis_result = self._redis.apply_mutations(redis_mutations)
+            redis_mutations = self._redis.build_mutations_for_batch(
+                inputs=batch.redis_inputs,
+                extra_mutations=batch.redis_mutations,
+            )
+            redis_result = self._redis.apply_mutations(redis_mutations, already_coalesced=True)
             self._clickhouse.enqueue_rows_by_table(batch.clickhouse_rows_by_table)
             clickhouse_stats = self._clickhouse.flush(force=True)
 
@@ -319,8 +321,6 @@ class StreamProcessor:
         self._aggregates = AggregateAccumulator(default_tariff_eur_per_kwh=config.session_rules.default_tariff_eur_per_kwh)
 
     def process_batch(self, messages: list[ConsumedMessage]) -> SinkBatch:
-        from src.common.schemas.event_envelope import EventEnvelope
-
         batch = SinkBatch()
         reserved_event_ids: list[str] = []
         now_utc = datetime.now(timezone.utc)
@@ -329,39 +329,34 @@ class StreamProcessor:
             batch.add_checkpoint(message.topic, message.partition, message.offset + 1)
 
         try:
-            parsed_events: list[tuple[ConsumedMessage, ParseResult, EventEnvelope]] = []
+            parsed_events: list[tuple[ConsumedMessage, ParsedEventResult]] = []
             for message in messages:
                 batch.outcome.processed_count += 1
                 received_at = datetime.now(timezone.utc)
-                parse_result = parse_message_value(message.value)
-                if not parse_result.ok:
+                parsed_result = parse_and_validate_message(message.value)
+                if not parsed_result.ok:
                     batch.outcome.invalid_count += 1
-                    batch.inc_metric(COUNTER_PARSE_FAILURES)
+                    if parsed_result.error_reason in {
+                        "empty_message",
+                        "malformed_utf8",
+                        "empty_json",
+                        "malformed_json",
+                        "event_must_be_json_object",
+                    }:
+                        batch.inc_metric(COUNTER_PARSE_FAILURES)
+                    else:
+                        batch.inc_metric(COUNTER_SCHEMA_VALIDATION_FAILURES)
                     self._route_dead_letter(
-                        reason=parse_result.error_reason or "parse_error",
-                        parse_result=parse_result,
+                        reason=parsed_result.error_reason or "parse_error",
+                        raw_payload_json=parsed_result.raw_payload_json,
+                        raw_event=parsed_result.event_dict,
                         source_message=message,
                         failed_at=received_at,
                         batch=batch,
                     )
                     continue
 
-                assert parse_result.event_dict is not None
-                schema_result = validate_envelope_schema(parse_result.event_dict)
-                if not schema_result.ok:
-                    batch.outcome.invalid_count += 1
-                    batch.inc_metric(COUNTER_SCHEMA_VALIDATION_FAILURES)
-                    self._route_dead_letter(
-                        reason="; ".join(schema_result.errors),
-                        parse_result=parse_result,
-                        source_message=message,
-                        failed_at=received_at,
-                        batch=batch,
-                    )
-                    continue
-
-                assert schema_result.envelope is not None
-                parsed_events.append((message, parse_result, schema_result.envelope))
+                parsed_events.append((message, parsed_result))
 
             batch.inc_metric(COUNTER_EVENTS_CONSUMED, batch.outcome.processed_count)
             if not parsed_events:
@@ -370,7 +365,9 @@ class StreamProcessor:
 
             unique_event_ids: list[str] = []
             seen_event_ids: set[str] = set()
-            for _, _, envelope in parsed_events:
+            for _, parsed_result in parsed_events:
+                assert parsed_result.envelope is not None
+                envelope = parsed_result.envelope
                 if envelope.event_id in seen_event_ids:
                     continue
                 seen_event_ids.add(envelope.event_id)
@@ -380,9 +377,11 @@ class StreamProcessor:
             reserved_event_ids = [event_id for event_id in unique_event_ids if event_id not in dedup_duplicate_ids]
             batch.reserved_event_ids.extend(reserved_event_ids)
 
-            non_duplicate_events: list[tuple[ConsumedMessage, ParseResult, EventEnvelope]] = []
+            non_duplicate_events: list[tuple[ConsumedMessage, ParsedEventResult]] = []
             seen_first_occurrence: set[str] = set()
-            for message, parse_result, envelope in parsed_events:
+            for message, parsed_result in parsed_events:
+                assert parsed_result.envelope is not None
+                envelope = parsed_result.envelope
                 if envelope.event_id in seen_first_occurrence:
                     batch.outcome.duplicate_count += 1
                     batch.inc_metric(COUNTER_DUPLICATES_DETECTED)
@@ -394,19 +393,23 @@ class StreamProcessor:
                     batch.inc_metric(COUNTER_DUPLICATES_DETECTED)
                     continue
 
-                non_duplicate_events.append((message, parse_result, envelope))
+                non_duplicate_events.append((message, parsed_result))
 
-            for message, parse_result, event in non_duplicate_events:
+            for message, parsed_result in non_duplicate_events:
+                assert parsed_result.envelope is not None
+                event = parsed_result.envelope
                 processing_started_monotonic = time.monotonic()
                 received_at = datetime.now(timezone.utc)
+                existing_session = self._session_state.peek_session(event.session_id)
 
-                semantic = validate_event_semantics(event, self._session_state)
+                semantic = validate_event_semantics(event, existing_session)
                 if not semantic.ok:
                     batch.outcome.invalid_count += 1
                     batch.inc_metric(COUNTER_SEMANTIC_VALIDATION_FAILURES)
                     self._route_dead_letter(
                         reason="; ".join(semantic.errors),
-                        parse_result=parse_result,
+                        raw_payload_json=parsed_result.raw_payload_json,
+                        raw_event=parsed_result.event_dict,
                         source_message=message,
                         failed_at=received_at,
                         batch=batch,
@@ -427,13 +430,17 @@ class StreamProcessor:
                 if lateness.is_too_late:
                     batch.add_clickhouse_row(
                         TABLE_LATE_EVENTS_REJECTED,
-                        self._clickhouse.build_late_rejected_row(event, lateness.lateness_seconds),
+                        self._clickhouse.build_late_rejected_row(
+                            event,
+                            lateness.lateness_seconds,
+                            payload_json=parsed_result.payload_json,
+                        ),
                     )
                     if self._late_sink is not None:
                         batch.kafka_late_records.append(
                             KafkaTopicRecord(
                                 payload={
-                                    "event": event.to_dict(),
+                                    "event": dict(parsed_result.event_dict) if parsed_result.event_dict is not None else event.to_dict(),
                                     "lateness_seconds": lateness.lateness_seconds,
                                     "reason": "too_late_rejected",
                                 },
@@ -446,6 +453,7 @@ class StreamProcessor:
 
                 session_mutation = self._session_state.apply_event(
                     event,
+                    existing_snapshot=existing_session,
                     finalize_on_session_stop=self._config.session_rules.finalize_on_session_stop,
                     finalize_on_fault_termination=self._config.session_rules.finalize_on_fault_termination,
                 )
@@ -455,12 +463,12 @@ class StreamProcessor:
                     batch.add_session_skip(session_mutation.reason)
 
                 session_snapshot = session_mutation.snapshot
-                if session_snapshot is None and event.session_id:
-                    session_snapshot = self._session_state.get_session(event.session_id)
+                active_session_count = session_mutation.active_session_count
 
-                active_session_count = self._session_state.active_sessions_for_station(event.station_id)
-
-                batch.add_clickhouse_row(TABLE_RAW_EVENTS, self._clickhouse.build_raw_event_row(event))
+                batch.add_clickhouse_row(
+                    TABLE_RAW_EVENTS,
+                    self._clickhouse.build_raw_event_row(event, payload_json=parsed_result.payload_json),
+                )
                 self._aggregates.record_event(
                     event,
                     session_snapshot=session_snapshot,
@@ -561,19 +569,20 @@ class StreamProcessor:
         for metric_name, amount in batch.metric_increments.items():
             self._metrics.inc(metric_name, amount)
 
+        observe_metric = self._metrics.observe
         for redis_input in batch.redis_inputs:
             ingest_lag_ms = max(
                 0.0,
-                (redis_input.telemetry.received_at - redis_input.telemetry.event_time.astimezone(timezone.utc)).total_seconds() * 1000.0,
+                (redis_input.telemetry.received_at - redis_input.telemetry.event_time).total_seconds() * 1000.0,
             )
             processor_latency_ms = max(
                 0.0,
                 (acknowledged_at_monotonic - redis_input.telemetry.processing_started_monotonic) * 1000.0,
             )
             end_to_end_latency_ms = ingest_lag_ms + processor_latency_ms
-            self._metrics.observe(HISTOGRAM_INGEST_LAG_MS, ingest_lag_ms)
-            self._metrics.observe(HISTOGRAM_PROCESSOR_LATENCY_MS, processor_latency_ms)
-            self._metrics.observe(HISTOGRAM_END_TO_END_LATENCY_MS, end_to_end_latency_ms)
+            observe_metric(HISTOGRAM_INGEST_LAG_MS, ingest_lag_ms)
+            observe_metric(HISTOGRAM_PROCESSOR_LATENCY_MS, processor_latency_ms)
+            observe_metric(HISTOGRAM_END_TO_END_LATENCY_MS, end_to_end_latency_ms)
 
         if batch.semantic_warning_counts:
             self._logger.debug(
@@ -652,16 +661,16 @@ class StreamProcessor:
         self,
         *,
         reason: str,
-        parse_result: ParseResult,
+        raw_payload_json: str,
+        raw_event: Mapping[str, object] | None,
         source_message: ConsumedMessage,
         failed_at: datetime,
         batch: SinkBatch,
     ) -> None:
         decision = route_invalid(reason)
-        raw_event: Mapping[str, object] | None = parse_result.event_dict
         dead_letter = dead_letter_from_raw(
             error_reason=reason,
-            raw_payload_json=parse_result.raw_payload_json,
+            raw_payload_json=raw_payload_json,
             failed_at=failed_at,
             raw_event=raw_event,
             source_topic=source_message.topic,

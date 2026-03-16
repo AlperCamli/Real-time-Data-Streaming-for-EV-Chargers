@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import unittest
+from types import SimpleNamespace
 
 from src.processor.consumer import KafkaEventConsumer
 from src.processor.main import _commit_worker_acks
@@ -61,6 +62,15 @@ class FakeSinkWorker:
         return checkpoints
 
 
+class FakePollConsumerClient(FakeKafkaConsumerClient):
+    def __init__(self, records) -> None:
+        super().__init__()
+        self._records = records
+
+    def poll(self, timeout_ms: int = 0, max_records: int = 0):
+        return self._records
+
+
 class KafkaConsumerCommitCompatibilityTests(unittest.TestCase):
     def test_build_commit_offsets_supports_leader_epoch_constructor(self) -> None:
         consumer = _build_consumer(
@@ -107,6 +117,25 @@ class KafkaConsumerCommitCompatibilityTests(unittest.TestCase):
         self.assertEqual(metadata.offset, 33)
         self.assertEqual(metadata.leader_epoch, -1)
 
+    def test_poll_preserves_per_partition_order_without_global_sort(self) -> None:
+        partition_one = FakeTopicPartition("cs.ev.events.raw", 1)
+        partition_zero = FakeTopicPartition("cs.ev.events.raw", 0)
+        consumer = _build_consumer(
+            client=FakePollConsumerClient(
+                {
+                    partition_one: [_record(3), _record(4)],
+                    partition_zero: [_record(1), _record(2)],
+                }
+            )
+        )
+
+        messages = consumer.poll()
+
+        self.assertEqual(
+            [(message.partition, message.offset) for message in messages],
+            [(1, 3), (1, 4), (0, 1), (0, 2)],
+        )
+
 
 def _build_consumer(
     client: FakeKafkaConsumerClient | None = None,
@@ -125,6 +154,10 @@ def _build_consumer(
         topic_partition_cls=topic_partition_cls,
         offset_and_metadata_cls=offset_and_metadata_cls,
     )
+
+
+def _record(offset: int):
+    return SimpleNamespace(offset=offset, key=None, value=b"{}", timestamp=None)
 
 
 if __name__ == "__main__":

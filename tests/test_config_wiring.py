@@ -16,7 +16,7 @@ class ConfigWiringTests(unittest.TestCase):
         raw = load_yaml_config(config_path)
         config = build_processor_config(raw, _service_settings_fixture())
 
-        self.assertEqual(config.consumer.max_poll_records, 20000)
+        self.assertEqual(config.consumer.max_poll_records, 10000)
         self.assertEqual(config.sinks.clickhouse_batch_size, 10000)
         self.assertEqual(config.sinks.kafka_batch_size, 5000)
         self.assertEqual(config.sinks.max_pending_batches, 4)
@@ -28,6 +28,7 @@ class ConfigWiringTests(unittest.TestCase):
         raw = load_yaml_config(config_path)
         config = build_processor_config(raw, _service_settings_fixture())
 
+        self.assertEqual(config.consumer.max_poll_records, 10000)
         self.assertEqual(config.sinks.clickhouse_flush_interval_seconds, 0.5)
         self.assertEqual(config.sinks.flush_interval_seconds, 0.5)
 
@@ -45,6 +46,20 @@ class ConfigWiringTests(unittest.TestCase):
         self.assertIn("PROCESSOR_CONFIG_PATH: config/processor.loadtest.10k.yaml", compose_text)
         self.assertTrue(Path("config/processor.loadtest.10k.yaml").exists())
         self.assertIn('command: ["redis-server", "--appendonly", "no", "--save", ""]', compose_text)
+
+    def test_scaled_compose_override_adds_extra_processors_without_host_ports(self) -> None:
+        compose_text = Path("docker-compose.loadtest.scaled.yml").read_text(encoding="utf-8")
+        self.assertIn("processor-b:", compose_text)
+        self.assertIn("processor-c:", compose_text)
+        self.assertIn("processor-d:", compose_text)
+        self.assertEqual(compose_text.count("ports: []"), 3)
+
+    def test_prometheus_scrapes_all_processor_instances(self) -> None:
+        prometheus_text = Path("config/prometheus/prometheus.yml").read_text(encoding="utf-8")
+        self.assertIn("processor:9100", prometheus_text)
+        self.assertIn("processor-b:9100", prometheus_text)
+        self.assertIn("processor-c:9100", prometheus_text)
+        self.assertIn("processor-d:9100", prometheus_text)
 
 
 def _service_settings_fixture():

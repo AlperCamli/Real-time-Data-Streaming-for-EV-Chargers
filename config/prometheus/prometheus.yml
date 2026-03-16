@@ -11,7 +11,7 @@ scrape_configs:
       - targets: ["simulator:9200"]
   - job_name: processor
     static_configs:
-      - targets: ["processor:9100"]
+      - targets: ["processor:9100", "processor-b:9100", "processor-c:9100", "processor-d:9100"]
   - job_name: clickhouse
     static_configs:
       - targets: ["clickhouse:9363"]

@@ -32,7 +32,10 @@ class FakeRedisSink:
     def build_mutations_for_inputs(self, inputs: list[object]) -> list[object]:
         return []
 
-    def apply_mutations(self, mutations: list[object]) -> RedisApplyResult:
+    def build_mutations_for_batch(self, *, inputs: list[object], extra_mutations: list[object]) -> list[object]:
+        return list(extra_mutations)
+
+    def apply_mutations(self, mutations: list[object], *, already_coalesced: bool = False) -> RedisApplyResult:
         if self.fail:
             raise RuntimeError("redis write failed")
         self.applied_batches.append(list(mutations))

@@ -86,90 +86,16 @@ return 1
         session_mutation_applied: bool = False,
         active_session_count: int = 0,
     ) -> list[RedisMutation]:
-        mutations: list[RedisMutation] = []
-        station_status = _derive_station_status(event)
-        connector_status = _derive_connector_status(event)
-        fault_flag = 1 if _is_faulted(station_status) else 0
-        latest_power_kw = _extract_power_kw(
-            event,
-            session_snapshot,
-            allow_meter_payload=session_mutation_applied,
+        latest_by_key: dict[str, tuple[int, int, RedisMutation]] = {}
+        self._merge_event_mutations(
+            event=event,
+            session_snapshot=session_snapshot,
+            session_mutation_applied=session_mutation_applied,
+            active_session_count=active_session_count,
+            latest_by_key=latest_by_key,
+            next_index=0,
         )
-        active_session_id = _extract_active_session_id(event)
-
-        station_fields: dict[str, object] = {
-            "station_id": event.station_id,
-            "last_event_time": event.event_time.astimezone(timezone.utc).isoformat(),
-            "last_ingest_time": event.ingest_time.astimezone(timezone.utc).isoformat(),
-            "operator_id": event.operator_id,
-            "current_status": station_status,
-            "latest_power_kw": latest_power_kw,
-            "active_session_count": max(0, active_session_count),
-            "fault_flag": fault_flag,
-            "city": event.location.city or "",
-            "country": event.location.country or "",
-        }
-        if event.event_type == EventType.HEARTBEAT:
-            station_fields["last_heartbeat_time"] = event.event_time.astimezone(timezone.utc).isoformat()
-
-        mutations.append(
-            RedisMutation(
-                key=station_state_key(event.station_id),
-                event_time=event.event_time,
-                fields=station_fields,
-                ttl_seconds=None,
-            )
-        )
-
-        if event.event_type == EventType.HEARTBEAT:
-            return mutations
-
-        should_update_connector = not (event.event_type == EventType.HEARTBEAT and event.connector_id == "0")
-        if should_update_connector:
-            connector_fields: dict[str, object] = {
-                "station_id": event.station_id,
-                "connector_id": event.connector_id,
-                "operator_id": event.operator_id,
-                "last_event_time": event.event_time.astimezone(timezone.utc).isoformat(),
-                "status": connector_status,
-                "session_id": active_session_id,
-                "power_kw": latest_power_kw,
-                "energy_kwh_last": _extract_meter_kwh(
-                    event,
-                    session_snapshot,
-                    allow_meter_payload=session_mutation_applied,
-                ),
-                "vehicle_brand": (session_snapshot.vehicle_brand if session_snapshot else "") or "",
-                "fault_code": _extract_fault_code(event),
-            }
-            if event.event_type == EventType.METER_UPDATE and session_mutation_applied:
-                connector_fields["last_meter_time"] = event.event_time.astimezone(timezone.utc).isoformat()
-
-            mutations.append(
-                RedisMutation(
-                    key=connector_state_key(event.station_id, event.connector_id),
-                    event_time=event.event_time,
-                    fields=connector_fields,
-                    ttl_seconds=None,
-                )
-            )
-
-        if event.session_id and session_snapshot is not None:
-            if event.event_type != EventType.METER_UPDATE or session_mutation_applied:
-                session_fields = _session_fields(session_snapshot)
-                ttl_seconds = self._session_state_ttl_seconds
-                if session_snapshot.finalized_reason:
-                    ttl_seconds = self._finalized_session_ttl_seconds
-                mutations.append(
-                    RedisMutation(
-                        key=session_state_key(event.session_id),
-                        event_time=event.event_time,
-                        fields=session_fields,
-                        ttl_seconds=ttl_seconds,
-                    )
-                )
-
-        return mutations
+        return self._finalize_coalesced_mutations(latest_by_key)
 
     def build_timeout_finalization_mutations(
         self,
@@ -179,14 +105,16 @@ return 1
     ) -> list[RedisMutation]:
         ended_at = snapshot.ended_at or snapshot.last_event_time
         guard_time = datetime.now(timezone.utc)
+        ended_at_iso = ended_at.isoformat()
+        guard_time_iso = guard_time.isoformat()
         return [
             RedisMutation(
                 key=station_state_key(snapshot.station_id),
                 event_time=guard_time,
                 fields={
                     "station_id": snapshot.station_id,
-                    "last_event_time": ended_at.astimezone(timezone.utc).isoformat(),
-                    "last_ingest_time": guard_time.isoformat(),
+                    "last_event_time": ended_at_iso,
+                    "last_ingest_time": guard_time_iso,
                     "operator_id": snapshot.operator_id,
                     "current_status": "available",
                     "active_session_count": max(0, active_session_count),
@@ -203,7 +131,7 @@ return 1
                     "station_id": snapshot.station_id,
                     "connector_id": snapshot.connector_id,
                     "operator_id": snapshot.operator_id,
-                    "last_event_time": ended_at.astimezone(timezone.utc).isoformat(),
+                    "last_event_time": ended_at_iso,
                     "status": "available",
                     "session_id": "",
                     "power_kw": 0.0,
@@ -222,27 +150,55 @@ return 1
         ]
 
     def build_mutations_for_inputs(self, inputs: list[RedisBatchInput]) -> list[RedisMutation]:
-        mutations: list[RedisMutation] = []
+        latest_by_key: dict[str, tuple[int, int, RedisMutation]] = {}
+        next_index = 0
         for item in inputs:
-            mutations.extend(
-                self.build_event_mutations(
-                    item.event,
-                    session_snapshot=item.session_snapshot,
-                    session_mutation_applied=item.session_mutation_applied,
-                    active_session_count=item.active_session_count,
-                )
+            next_index = self._merge_event_mutations(
+                event=item.event,
+                session_snapshot=item.session_snapshot,
+                session_mutation_applied=item.session_mutation_applied,
+                active_session_count=item.active_session_count,
+                latest_by_key=latest_by_key,
+                next_index=next_index,
             )
-        return mutations
+        return self._finalize_coalesced_mutations(latest_by_key)
 
-    def apply_mutations(self, mutations: list[RedisMutation]) -> RedisApplyResult:
+    def build_mutations_for_batch(
+        self,
+        *,
+        inputs: list[RedisBatchInput],
+        extra_mutations: list[RedisMutation],
+    ) -> list[RedisMutation]:
+        latest_by_key: dict[str, tuple[int, int, RedisMutation]] = {}
+        next_index = 0
+        for item in inputs:
+            next_index = self._merge_event_mutations(
+                event=item.event,
+                session_snapshot=item.session_snapshot,
+                session_mutation_applied=item.session_mutation_applied,
+                active_session_count=item.active_session_count,
+                latest_by_key=latest_by_key,
+                next_index=next_index,
+            )
+        for mutation in extra_mutations:
+            self._merge_mutation(
+                mutation=mutation,
+                latest_by_key=latest_by_key,
+                index=next_index,
+                event_time_ms=int(mutation.event_time.timestamp() * 1000),
+            )
+            next_index += 1
+        return self._finalize_coalesced_mutations(latest_by_key)
+
+    def apply_mutations(self, mutations: list[RedisMutation], *, already_coalesced: bool = False) -> RedisApplyResult:
         started = time.monotonic()
         result = RedisApplyResult()
-        coalesced = self._coalesce_mutations(mutations)
-        if not coalesced:
+        pending = mutations if already_coalesced else self._coalesce_mutations(mutations)
+        if not pending:
             return result
 
         if self._redis is None:
-            for mutation in coalesced:
+            for mutation in pending:
                 status = self._write_if_newer(
                     key=mutation.key,
                     event_time=mutation.event_time,
@@ -257,13 +213,13 @@ return 1
                 else:
                     result.error_keys += 1
         else:
-            self._pipeline_writes(coalesced, result)
+            self._pipeline_writes(pending, result)
 
         result.latency_seconds = max(0.0, time.monotonic() - started)
         return result
 
     def apply_events_batch(self, inputs: list[RedisBatchInput]) -> RedisApplyResult:
-        return self.apply_mutations(self.build_mutations_for_inputs(inputs))
+        return self.apply_mutations(self.build_mutations_for_inputs(inputs), already_coalesced=True)
 
     def _pipeline_writes(self, pending: list[RedisMutation], result: RedisApplyResult) -> None:
         if not pending:
@@ -271,16 +227,17 @@ return 1
 
         try:
             pipe = self._redis.pipeline(transaction=False)
+            updated_at = datetime.now(timezone.utc).isoformat()
+            as_redis_value = _as_redis_value
 
             for mutation in pending:
-                event_time_utc = mutation.event_time.astimezone(timezone.utc)
-                event_time_ms = int(event_time_utc.timestamp() * 1000)
+                event_time_ms = int(mutation.event_time.timestamp() * 1000)
                 redis_fields: dict[str, str] = {
                     "last_event_time_ms": str(event_time_ms),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": updated_at,
                 }
                 for name, value in mutation.fields.items():
-                    redis_fields[name] = _as_redis_value(value)
+                    redis_fields[name] = as_redis_value(value)
                 ttl_seconds = int(mutation.ttl_seconds or 0)
                 argv: list[str] = [str(event_time_ms), str(ttl_seconds)]
                 for field_name, field_value in redis_fields.items():
@@ -309,21 +266,15 @@ return 1
             result.attempts += len(pending)
 
     def _coalesce_mutations(self, mutations: list[RedisMutation]) -> list[RedisMutation]:
-        latest_by_key: dict[str, tuple[int, RedisMutation]] = {}
+        latest_by_key: dict[str, tuple[int, int, RedisMutation]] = {}
         for index, mutation in enumerate(mutations):
-            current = latest_by_key.get(mutation.key)
-            if current is None:
-                latest_by_key[mutation.key] = (index, mutation)
-                continue
-
-            _, existing = current
-            existing_ts = int(existing.event_time.astimezone(timezone.utc).timestamp() * 1000)
-            candidate_ts = int(mutation.event_time.astimezone(timezone.utc).timestamp() * 1000)
-            if candidate_ts > existing_ts or (candidate_ts == existing_ts and index >= current[0]):
-                latest_by_key[mutation.key] = (index, mutation)
-
-        coalesced = sorted(latest_by_key.values(), key=lambda item: item[0])
-        return [mutation for _, mutation in coalesced]
+            self._merge_mutation(
+                mutation=mutation,
+                latest_by_key=latest_by_key,
+                index=index,
+                event_time_ms=int(mutation.event_time.timestamp() * 1000),
+            )
+        return self._finalize_coalesced_mutations(latest_by_key)
 
     def _write_if_newer(
         self,
@@ -333,8 +284,7 @@ return 1
         fields: dict[str, object],
         ttl_seconds: int | None,
     ) -> str:
-        event_time_utc = event_time.astimezone(timezone.utc)
-        event_time_ms = int(event_time_utc.timestamp() * 1000)
+        event_time_ms = int(event_time.timestamp() * 1000)
 
         redis_fields: dict[str, str] = {
             "last_event_time_ms": str(event_time_ms),
@@ -367,16 +317,139 @@ return 1
             )
             return "error"
 
+    def _merge_event_mutations(
+        self,
+        *,
+        event: EventEnvelope,
+        session_snapshot: SessionSnapshot | None,
+        session_mutation_applied: bool,
+        active_session_count: int,
+        latest_by_key: dict[str, tuple[int, int, RedisMutation]],
+        next_index: int,
+    ) -> int:
+        event_time_ms = int(event.event_time.timestamp() * 1000)
+        event_time_iso = event.event_time.isoformat()
+        ingest_time_iso = event.ingest_time.isoformat()
+        station_status = _derive_station_status(event)
+        connector_status = _derive_connector_status(event)
+        fault_flag = 1 if _is_faulted(station_status) else 0
+        latest_power_kw = _extract_power_kw(
+            event,
+            session_snapshot,
+            allow_meter_payload=session_mutation_applied,
+        )
+        active_session_id = _extract_active_session_id(event)
+
+        next_index = self._merge_mutation(
+            mutation=RedisMutation(
+                key=station_state_key(event.station_id),
+                event_time=event.event_time,
+                fields={
+                    "station_id": event.station_id,
+                    "last_event_time": event_time_iso,
+                    "last_ingest_time": ingest_time_iso,
+                    "operator_id": event.operator_id,
+                    "current_status": station_status,
+                    "latest_power_kw": latest_power_kw,
+                    "active_session_count": max(0, active_session_count),
+                    "fault_flag": fault_flag,
+                    "city": event.location.city or "",
+                    "country": event.location.country or "",
+                    **(
+                        {"last_heartbeat_time": event_time_iso}
+                        if event.event_type == EventType.HEARTBEAT
+                        else {}
+                    ),
+                },
+                ttl_seconds=None,
+            ),
+            latest_by_key=latest_by_key,
+            index=next_index,
+            event_time_ms=event_time_ms,
+        )
+
+        if event.event_type == EventType.HEARTBEAT:
+            return next_index
+
+        next_index = self._merge_mutation(
+            mutation=RedisMutation(
+                key=connector_state_key(event.station_id, event.connector_id),
+                event_time=event.event_time,
+                fields={
+                    "station_id": event.station_id,
+                    "connector_id": event.connector_id,
+                    "operator_id": event.operator_id,
+                    "last_event_time": event_time_iso,
+                    "status": connector_status,
+                    "session_id": active_session_id,
+                    "power_kw": latest_power_kw,
+                    "energy_kwh_last": _extract_meter_kwh(
+                        event,
+                        session_snapshot,
+                        allow_meter_payload=session_mutation_applied,
+                    ),
+                    "vehicle_brand": (session_snapshot.vehicle_brand if session_snapshot else "") or "",
+                    "fault_code": _extract_fault_code(event),
+                    **(
+                        {"last_meter_time": event_time_iso}
+                        if event.event_type == EventType.METER_UPDATE and session_mutation_applied
+                        else {}
+                    ),
+                },
+                ttl_seconds=None,
+            ),
+            latest_by_key=latest_by_key,
+            index=next_index,
+            event_time_ms=event_time_ms,
+        )
+
+        if event.session_id and session_snapshot is not None:
+            if event.event_type != EventType.METER_UPDATE or session_mutation_applied:
+                ttl_seconds = self._finalized_session_ttl_seconds if session_snapshot.finalized_reason else self._session_state_ttl_seconds
+                next_index = self._merge_mutation(
+                    mutation=RedisMutation(
+                        key=session_state_key(event.session_id),
+                        event_time=event.event_time,
+                        fields=_session_fields(session_snapshot),
+                        ttl_seconds=ttl_seconds,
+                    ),
+                    latest_by_key=latest_by_key,
+                    index=next_index,
+                    event_time_ms=event_time_ms,
+                )
+
+        return next_index
+
+    def _merge_mutation(
+        self,
+        *,
+        mutation: RedisMutation,
+        latest_by_key: dict[str, tuple[int, int, RedisMutation]],
+        index: int,
+        event_time_ms: int,
+    ) -> int:
+        current = latest_by_key.get(mutation.key)
+        if current is None or event_time_ms > current[1] or (event_time_ms == current[1] and index >= current[0]):
+            latest_by_key[mutation.key] = (index, event_time_ms, mutation)
+        return index + 1
+
+    @staticmethod
+    def _finalize_coalesced_mutations(
+        latest_by_key: dict[str, tuple[int, int, RedisMutation]],
+    ) -> list[RedisMutation]:
+        coalesced = sorted(latest_by_key.values(), key=lambda item: item[0])
+        return [mutation for _, _, mutation in coalesced]
+
 
 def _session_fields(snapshot: SessionSnapshot) -> dict[str, object]:
-    last_event_time = snapshot.last_event_time.astimezone(timezone.utc).isoformat()
+    last_event_time = snapshot.last_event_time.isoformat()
     estimated_cost = max(0.0, snapshot.total_energy_kwh) * max(0.0, snapshot.tariff_eur_per_kwh)
     return {
         "session_id": snapshot.session_id,
         "station_id": snapshot.station_id,
         "connector_id": snapshot.connector_id,
         "operator_id": snapshot.operator_id,
-        "start_time": snapshot.started_at.astimezone(timezone.utc).isoformat(),
+        "start_time": snapshot.started_at.isoformat(),
         "last_event_time": last_event_time,
         "vehicle_brand": snapshot.vehicle_brand or "",
         "vehicle_model": snapshot.vehicle_model or "",

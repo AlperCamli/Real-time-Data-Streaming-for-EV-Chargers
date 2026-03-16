@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 
 
@@ -28,10 +28,7 @@ class LatenessResult:
 
 
 def classify_lateness(event_time: datetime, received_at: datetime, allowed_lateness_seconds: int) -> LatenessResult:
-    event_time_utc = event_time.astimezone(timezone.utc)
-    received_at_utc = received_at.astimezone(timezone.utc)
-
-    lateness_seconds = max(0, int((received_at_utc - event_time_utc).total_seconds()))
+    lateness_seconds = max(0, int((received_at - event_time).total_seconds()))
     if lateness_seconds == 0:
         return LatenessResult(classification=LatenessClass.ON_TIME, lateness_seconds=lateness_seconds)
     if lateness_seconds <= max(1, allowed_lateness_seconds):

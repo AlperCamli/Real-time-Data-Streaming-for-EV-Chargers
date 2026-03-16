@@ -100,14 +100,24 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
    - `cp .env.example .env`
 2. Start full pipeline (infra + processor + simulator):
    - `docker compose up -d --build`
-3. Start optional observability stack:
+3. Start the scaled 10k load-test stack (4 processor instances):
+   - `docker compose -f docker-compose.yml -f docker-compose.loadtest.10k.yml -f docker-compose.loadtest.scaled.yml up -d --build`
+4. Start the scaled 100k load-test stack (4 processor instances):
+   - `docker compose -f docker-compose.yml -f docker-compose.loadtest.100k.yml -f docker-compose.loadtest.scaled.yml up -d --build`
+5. Start optional observability stack:
    - `docker compose --profile observability up -d prometheus grafana`
 
 Runtime checks:
 - `docker compose ps`
+- `docker compose -f docker-compose.yml -f docker-compose.loadtest.10k.yml -f docker-compose.loadtest.scaled.yml ps`
 - `docker logs -f cs-processor`
 - `docker logs -f cs-simulator`
 - Prometheus targets: `http://localhost:9090/targets`
+
+Shutdown commands:
+- Default stack: `docker compose down --remove-orphans`
+- Scaled 10k stack: `docker compose -f docker-compose.yml -f docker-compose.loadtest.10k.yml -f docker-compose.loadtest.scaled.yml down --remove-orphans`
+- Scaled 100k stack: `docker compose -f docker-compose.yml -f docker-compose.loadtest.100k.yml -f docker-compose.loadtest.scaled.yml down --remove-orphans`
 
 ## Python Dependencies (Optional for Host-Run)
 - Recommended isolated env:
@@ -159,6 +169,13 @@ Run commands:
 - 1k: `docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d --build`
 - 10k: `docker compose -f docker-compose.yml -f docker-compose.loadtest.10k.yml up -d --build`
 - 100k: `docker compose -f docker-compose.yml -f docker-compose.loadtest.100k.yml up -d --build`
+- 10k scaled: `docker compose -f docker-compose.yml -f docker-compose.loadtest.10k.yml -f docker-compose.loadtest.scaled.yml up -d --build`
+- 100k scaled: `docker compose -f docker-compose.yml -f docker-compose.loadtest.100k.yml -f docker-compose.loadtest.scaled.yml up -d --build`
+
+Scaling note:
+- `docker-compose.loadtest.scaled.yml` adds `processor-b`, `processor-c`, and `processor-d`.
+- Always combine the scaled override with the base compose file and one load-test override.
+- The extra processor containers share the same consumer group and do not expose host ports.
 
 How to configure/tune each tier:
 

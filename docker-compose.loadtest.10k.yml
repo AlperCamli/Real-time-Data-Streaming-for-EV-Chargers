@@ -11,3 +11,18 @@ services:
     environment:
       PROCESSOR_CONFIG_PATH: config/processor.loadtest.10k.yaml
     restart: unless-stopped
+
+  processor-b:
+    environment:
+      PROCESSOR_CONFIG_PATH: config/processor.loadtest.10k.yaml
+    restart: unless-stopped
+
+  processor-c:
+    environment:
+      PROCESSOR_CONFIG_PATH: config/processor.loadtest.10k.yaml
+    restart: unless-stopped
+
+  processor-d:
+    environment:
+      PROCESSOR_CONFIG_PATH: config/processor.loadtest.10k.yaml
+    restart: unless-stopped

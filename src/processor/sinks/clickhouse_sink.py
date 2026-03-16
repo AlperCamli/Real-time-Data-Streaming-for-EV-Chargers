@@ -250,8 +250,10 @@ class ClickHouseSink:
         self.flush(force=True)
 
     @staticmethod
-    def build_raw_event_row(event: EventEnvelope) -> tuple[object, ...]:
-        payload_json = json.dumps(payload_to_dict(event.payload), separators=(",", ":"), ensure_ascii=True)
+    def build_raw_event_row(event: EventEnvelope, *, payload_json: str | None = None) -> tuple[object, ...]:
+        encoded_payload = payload_json
+        if encoded_payload is None:
+            encoded_payload = json.dumps(payload_to_dict(event.payload), separators=(",", ":"), ensure_ascii=True)
         return (
             event.event_id,
             event.event_type.value,
@@ -268,7 +270,7 @@ class ClickHouseSink:
             event.location.country,
             event.location.latitude,
             event.location.longitude,
-            payload_json,
+            encoded_payload,
         )
 
     @staticmethod
@@ -291,8 +293,15 @@ class ClickHouseSink:
         )
 
     @staticmethod
-    def build_late_rejected_row(event: EventEnvelope, lateness_seconds: int) -> tuple[object, ...]:
-        payload_json = json.dumps(payload_to_dict(event.payload), separators=(",", ":"), ensure_ascii=True)
+    def build_late_rejected_row(
+        event: EventEnvelope,
+        lateness_seconds: int,
+        *,
+        payload_json: str | None = None,
+    ) -> tuple[object, ...]:
+        encoded_payload = payload_json
+        if encoded_payload is None:
+            encoded_payload = json.dumps(payload_to_dict(event.payload), separators=(",", ":"), ensure_ascii=True)
         return (
             event.event_id,
             event.event_type.value,
@@ -306,7 +315,7 @@ class ClickHouseSink:
             event.producer_id,
             event.sequence_no,
             max(0, lateness_seconds),
-            payload_json,
+            encoded_payload,
             "too_late_rejected",
             datetime.now(timezone.utc),
         )

@@ -9,16 +9,16 @@ DEDUP_TEMPLATE = "dedup:{event_id}"
 
 
 def station_state_key(station_id: str) -> str:
-    return STATION_STATE_TEMPLATE.format(station_id=station_id)
+    return f"station:{station_id}:state"
 
 
 def connector_state_key(station_id: str, connector_id: str) -> str:
-    return CONNECTOR_STATE_TEMPLATE.format(station_id=station_id, connector_id=connector_id)
+    return f"station:{station_id}:connector:{connector_id}:state"
 
 
 def session_state_key(session_id: str) -> str:
-    return SESSION_STATE_TEMPLATE.format(session_id=session_id)
+    return f"session:{session_id}:state"
 
 
 def dedup_key(event_id: str) -> str:
-    return DEDUP_TEMPLATE.format(event_id=event_id)
+    return f"dedup:{event_id}"

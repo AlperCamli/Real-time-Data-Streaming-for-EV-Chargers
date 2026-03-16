@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
 
 from src.common.event_types import EventType
 from src.common.schemas.event_envelope import EventEnvelope
@@ -18,11 +17,6 @@ from src.common.schemas.event_payloads import (
 from src.processor.state.session_state import SessionSnapshot
 
 
-class SessionLookup(Protocol):
-    def get_session(self, session_id: str) -> SessionSnapshot | None:
-        """Returns active session snapshot if present."""
-
-
 @dataclass(slots=True)
 class SemanticValidationResult:
     errors: list[str]
@@ -33,7 +27,7 @@ class SemanticValidationResult:
         return not self.errors
 
 
-def validate_event_semantics(event: EventEnvelope, session_lookup: SessionLookup) -> SemanticValidationResult:
+def validate_event_semantics(event: EventEnvelope, existing_session: SessionSnapshot | None) -> SemanticValidationResult:
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -77,7 +71,6 @@ def validate_event_semantics(event: EventEnvelope, session_lookup: SessionLookup
         if not event.payload.severity:
             errors.append("FAULT_ALERT payload.severity must be non-empty")
 
-    existing_session = session_lookup.get_session(event.session_id) if event.session_id else None
     if existing_session is not None:
         if existing_session.station_id != event.station_id:
             errors.append("session identity mismatch: station_id")

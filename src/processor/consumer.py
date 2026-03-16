@@ -85,7 +85,6 @@ class KafkaEventConsumer:
                     )
                 )
 
-        messages.sort(key=lambda item: (item.topic, item.partition, item.offset))
         return messages
 
     def heartbeat(self) -> None:
