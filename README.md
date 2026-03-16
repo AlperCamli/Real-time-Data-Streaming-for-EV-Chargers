@@ -100,9 +100,9 @@ Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Report
    - `cp .env.example .env`
 2. Start full pipeline (infra + processor + simulator):
    - `docker compose up -d --build`
-3. Start the scaled 10k load-test stack (4 processor instances):
+3. Start the scaled 10k load-test stack (2 simulator instances, 4 processor instances):
    - `docker compose -f docker-compose.yml -f docker-compose.loadtest.10k.yml -f docker-compose.loadtest.scaled.yml up -d --build`
-4. Start the scaled 100k load-test stack (4 processor instances):
+4. Start the scaled 100k load-test stack (2 simulator instances, 4 processor instances):
    - `docker compose -f docker-compose.yml -f docker-compose.loadtest.100k.yml -f docker-compose.loadtest.scaled.yml up -d --build`
 5. Start optional observability stack:
    - `docker compose --profile observability up -d prometheus grafana`
@@ -173,9 +173,11 @@ Run commands:
 - 100k scaled: `docker compose -f docker-compose.yml -f docker-compose.loadtest.100k.yml -f docker-compose.loadtest.scaled.yml up -d --build`
 
 Scaling note:
-- `docker-compose.loadtest.scaled.yml` adds `processor-b`, `processor-c`, and `processor-d`.
+- `docker-compose.loadtest.scaled.yml` is loadtest-only and adds `simulator-b`, `processor-b`, `processor-c`, and `processor-d`.
+- In scaled mode, the 2 simulators shard the configured station namespace and split the configured total target EPS evenly.
 - Always combine the scaled override with the base compose file and one load-test override.
 - The extra processor containers share the same consumer group and do not expose host ports.
+- `simulator-b` does not expose a host port; Prometheus scrapes it over the compose network on `simulator-b:9201`.
 
 How to configure/tune each tier:
 
@@ -185,6 +187,8 @@ How to configure/tune each tier:
   - `network.tick_interval_seconds`: scheduling resolution.
   - `demand.base_session_start_rate_per_idle_connector_minute`: pressure for new sessions.
   - `session.meter_update_interval_seconds_min/max`: update frequency for active sessions.
+  - `eps_controller.*`: bounded EPS controller behavior (`target_band_ratio`, admission scale steps, per-tick start caps).
+  - `data_quality.too_late_excluded_event_types`: event types excluded from too-late cloning.
 - Processor knobs:
   - `consumer.max_poll_records`: records per poll.
   - `consumer.poll_timeout_ms`: loop wait time (lower = more responsive, higher CPU).
@@ -262,6 +266,7 @@ Benchmark outputs are written under:
 - `http://localhost:8123/` returning `OK` is expected. ClickHouse HTTP uses `/?query=...`.
 - ClickHouse Prometheus metrics are exposed on `http://localhost:9363/metrics`.
 - In Docker-first mode, Prometheus scrapes `simulator:9200` and `processor:9100` over the compose network.
+- In scaled loadtest mode, Prometheus also scrapes `simulator-b:9201` plus `processor-b:9100`, `processor-c:9100`, and `processor-d:9100`.
 - If targets are down, confirm the app containers are running:
   - `docker compose ps`
   - `docker logs --tail=100 cs-processor`

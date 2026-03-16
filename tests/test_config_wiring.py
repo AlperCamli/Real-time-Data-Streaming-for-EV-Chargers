@@ -44,22 +44,35 @@ class ConfigWiringTests(unittest.TestCase):
     def test_10k_compose_override_points_to_existing_processor_config_and_disables_redis_persistence(self) -> None:
         compose_text = Path("docker-compose.loadtest.10k.yml").read_text(encoding="utf-8")
         self.assertIn("PROCESSOR_CONFIG_PATH: config/processor.loadtest.10k.yaml", compose_text)
+        self.assertIn("SIMULATOR_CONFIG_PATH: config/simulator.loadtest.10k.yaml", compose_text)
         self.assertTrue(Path("config/processor.loadtest.10k.yaml").exists())
         self.assertIn('command: ["redis-server", "--appendonly", "no", "--save", ""]', compose_text)
 
-    def test_scaled_compose_override_adds_extra_processors_without_host_ports(self) -> None:
+    def test_scaled_compose_override_adds_extra_processors_and_simulator_without_host_ports(self) -> None:
         compose_text = Path("docker-compose.loadtest.scaled.yml").read_text(encoding="utf-8")
+        self.assertIn("simulator-b:", compose_text)
         self.assertIn("processor-b:", compose_text)
         self.assertIn("processor-c:", compose_text)
         self.assertIn("processor-d:", compose_text)
-        self.assertEqual(compose_text.count("ports: []"), 3)
+        self.assertIn("--shard-index 0 --shard-count 2 --target-eps-scale 0.5", compose_text)
+        self.assertIn("SIMULATOR_METRICS_PORT: 9201", compose_text)
+        self.assertEqual(compose_text.count("ports: []"), 4)
 
-    def test_prometheus_scrapes_all_processor_instances(self) -> None:
+    def test_prometheus_scrapes_all_scaled_instances(self) -> None:
         prometheus_text = Path("config/prometheus/prometheus.yml").read_text(encoding="utf-8")
+        self.assertIn("simulator:9200", prometheus_text)
+        self.assertIn("simulator-b:9201", prometheus_text)
         self.assertIn("processor:9100", prometheus_text)
         self.assertIn("processor-b:9100", prometheus_text)
         self.assertIn("processor-c:9100", prometheus_text)
         self.assertIn("processor-d:9100", prometheus_text)
+
+    def test_overview_dashboard_aggregates_multi_instance_metrics(self) -> None:
+        dashboard_text = Path("dashboards/grafana/dashboards/chargesquare-overview.json").read_text(encoding="utf-8")
+        self.assertIn('"expr": "sum(rate(events_generated_total[1m]))"', dashboard_text)
+        self.assertIn('"expr": "max(kafka_consumer_lag)"', dashboard_text)
+        self.assertIn('"expr": "sum(active_sessions)"', dashboard_text)
+        self.assertIn('"expr": "max(end_to_end_latency_ms_p99)"', dashboard_text)
 
 
 def _service_settings_fixture():

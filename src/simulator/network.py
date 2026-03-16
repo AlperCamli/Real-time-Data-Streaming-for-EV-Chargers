@@ -13,10 +13,19 @@ from src.simulator.models import ConnectorState, ConnectorStatus, Location, Netw
 T = TypeVar("T")
 
 
-def build_network(config: SimulatorConfig, rng: random.Random, start_time: datetime) -> NetworkState:
+def build_network(
+    config: SimulatorConfig,
+    rng: random.Random,
+    start_time: datetime,
+    *,
+    shard_index: int = 0,
+    shard_count: int = 1,
+) -> NetworkState:
     stations: dict[str, StationState] = {}
 
     for idx in range(config.network.station_count):
+        if idx % shard_count != shard_index:
+            continue
         station_id = f"ST-{idx + 1:04d}"
         operator = weighted_choice(config.network.operator_distribution, rng, lambda item: item.weight)
         geo = weighted_choice(config.network.geography_distribution, rng, lambda item: item.weight)

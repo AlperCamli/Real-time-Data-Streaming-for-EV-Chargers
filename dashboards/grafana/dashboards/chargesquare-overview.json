@@ -51,12 +51,12 @@
       },
       "targets": [
         {
-          "expr": "rate(events_generated_total[1m])",
+          "expr": "sum(rate(events_generated_total[1m]))",
           "legendFormat": "generated_eps",
           "refId": "A"
         },
         {
-          "expr": "rate(events_accepted_total[1m])",
+          "expr": "sum(rate(events_accepted_total[1m]))",
           "legendFormat": "accepted_eps",
           "refId": "B"
         }
@@ -94,7 +94,7 @@
       },
       "targets": [
         {
-          "expr": "kafka_consumer_lag",
+          "expr": "max(kafka_consumer_lag)",
           "legendFormat": "consumer_lag",
           "refId": "A"
         }
@@ -132,22 +132,22 @@
       },
       "targets": [
         {
-          "expr": "rate(dead_letter_routed_total[5m])",
+          "expr": "sum(rate(dead_letter_routed_total[5m]))",
           "legendFormat": "dlq_rps",
           "refId": "A"
         },
         {
-          "expr": "rate(too_late_rejected_total[5m])",
+          "expr": "sum(rate(too_late_rejected_total[5m]))",
           "legendFormat": "too_late_rps",
           "refId": "B"
         },
         {
-          "expr": "rate(duplicates_detected_total[5m])",
+          "expr": "sum(rate(duplicates_detected_total[5m]))",
           "legendFormat": "duplicates_rps",
           "refId": "C"
         },
         {
-          "expr": "rate(semantic_validation_failures_total[5m])",
+          "expr": "sum(rate(semantic_validation_failures_total[5m]))",
           "legendFormat": "semantic_fail_rps",
           "refId": "D"
         }
@@ -185,17 +185,17 @@
       },
       "targets": [
         {
-          "expr": "ingest_lag_ms_p95",
+          "expr": "max(ingest_lag_ms_p95)",
           "legendFormat": "ingest_p95_ms",
           "refId": "A"
         },
         {
-          "expr": "end_to_end_latency_ms_p95",
+          "expr": "max(end_to_end_latency_ms_p95)",
           "legendFormat": "e2e_p95_ms",
           "refId": "B"
         },
         {
-          "expr": "end_to_end_latency_ms_p99",
+          "expr": "max(end_to_end_latency_ms_p99)",
           "legendFormat": "e2e_p99_ms",
           "refId": "C"
         }
@@ -233,17 +233,17 @@
       },
       "targets": [
         {
-          "expr": "rate(clickhouse_raw_rows_written_total[1m])",
+          "expr": "sum(rate(clickhouse_raw_rows_written_total[1m]))",
           "legendFormat": "raw_rows_per_sec",
           "refId": "A"
         },
         {
-          "expr": "rate(clickhouse_fact_session_rows_written_total[1m])",
+          "expr": "sum(rate(clickhouse_fact_session_rows_written_total[1m]))",
           "legendFormat": "fact_rows_per_sec",
           "refId": "B"
         },
         {
-          "expr": "rate(clickhouse_agg_station_minute_rows_written_total[1m])",
+          "expr": "sum(rate(clickhouse_agg_station_minute_rows_written_total[1m]))",
           "legendFormat": "agg_station_rows_per_sec",
           "refId": "C"
         }
@@ -281,12 +281,12 @@
       },
       "targets": [
         {
-          "expr": "redis_write_latency_ms_p95",
+          "expr": "max(redis_write_latency_ms_p95)",
           "legendFormat": "redis_write_p95_ms",
           "refId": "A"
         },
         {
-          "expr": "clickhouse_insert_latency_ms_p95",
+          "expr": "max(clickhouse_insert_latency_ms_p95)",
           "legendFormat": "clickhouse_insert_p95_ms",
           "refId": "B"
         }
@@ -362,7 +362,7 @@
       },
       "targets": [
         {
-          "expr": "active_sessions",
+          "expr": "sum(active_sessions)",
           "legendFormat": "simulator_active_sessions",
           "refId": "A"
         }
@@ -403,7 +403,7 @@
       },
       "targets": [
         {
-          "expr": "events_generated_total",
+          "expr": "sum(events_generated_total)",
           "instant": true,
           "refId": "A"
         }
@@ -444,7 +444,7 @@
       },
       "targets": [
         {
-          "expr": "events_accepted_total",
+          "expr": "sum(events_accepted_total)",
           "instant": true,
           "refId": "A"
         }
@@ -485,7 +485,7 @@
       },
       "targets": [
         {
-          "expr": "dead_letter_routed_total",
+          "expr": "sum(dead_letter_routed_total)",
           "instant": true,
           "refId": "A"
         }
@@ -526,7 +526,7 @@
       },
       "targets": [
         {
-          "expr": "too_late_rejected_total",
+          "expr": "sum(too_late_rejected_total)",
           "instant": true,
           "refId": "A"
         }

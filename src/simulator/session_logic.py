@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -31,6 +32,14 @@ VEHICLE_PROFILES: dict[str, tuple[tuple[float, float], tuple[float, float]]] = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class StartControlSnapshot:
+    admission_scale: float
+    effective_probability: float
+    effective_cap: int
+    blocked_overshoot: bool
+
+
 class SessionEngine:
     def __init__(
         self,
@@ -43,6 +52,17 @@ class SessionEngine:
         self._network = network
         self._event_factory = event_factory
         self._rng = rng
+        self._admission_scale = 1.0
+        self._last_start_control = StartControlSnapshot(
+            admission_scale=1.0,
+            effective_probability=0.0,
+            effective_cap=0,
+            blocked_overshoot=False,
+        )
+
+    @property
+    def last_start_control(self) -> StartControlSnapshot:
+        return self._last_start_control
 
     def generate_events(self, now: datetime, target_eps: float, observed_eps: float, tick_seconds: float) -> list[dict[str, object]]:
         events: list[dict[str, object]] = []
@@ -53,17 +73,19 @@ class SessionEngine:
         events.extend(self._inject_faults(now, tick_seconds))
 
         target_events_this_tick = int(max(1.0, target_eps * tick_seconds))
+        pre_start_events_count = len(events)
         demand_multiplier = self._demand_multiplier(now)
-        events.extend(
-            self._start_sessions(
-                now=now,
-                demand_multiplier=demand_multiplier,
-                observed_eps=observed_eps,
-                target_eps=target_eps,
-                remaining_event_budget=max(0, target_events_this_tick - len(events)),
-                tick_seconds=tick_seconds,
-            )
+        start_events, start_control = self._start_sessions(
+            now=now,
+            demand_multiplier=demand_multiplier,
+            observed_eps=observed_eps,
+            target_eps=target_eps,
+            pre_start_events_count=pre_start_events_count,
+            target_events_this_tick=target_events_this_tick,
+            tick_seconds=tick_seconds,
         )
+        self._last_start_control = start_control
+        events.extend(start_events)
 
         return events
 
@@ -212,15 +234,106 @@ class SessionEngine:
         demand_multiplier: float,
         observed_eps: float,
         target_eps: float,
-        remaining_event_budget: int,
+        pre_start_events_count: int,
+        target_events_this_tick: int,
         tick_seconds: float,
-    ) -> list[dict[str, object]]:
+    ) -> tuple[list[dict[str, object]], StartControlSnapshot]:
         available_connectors = self._network.available_connectors()
         self._rng.shuffle(available_connectors)
 
         if not available_connectors:
-            return []
+            return [], StartControlSnapshot(
+                admission_scale=self._admission_scale,
+                effective_probability=0.0,
+                effective_cap=0,
+                blocked_overshoot=False,
+            )
 
+        if not self._config.eps_controller.enabled:
+            return self._start_sessions_legacy(
+                now=now,
+                demand_multiplier=demand_multiplier,
+                observed_eps=observed_eps,
+                target_eps=target_eps,
+                target_events_this_tick=target_events_this_tick,
+                pre_start_events_count=pre_start_events_count,
+                tick_seconds=tick_seconds,
+                available_connectors=available_connectors,
+            )
+
+        lower_bound, upper_bound = self._eps_bounds(target_eps)
+        overshoot = observed_eps > upper_bound
+        under_target = observed_eps < lower_bound
+
+        if overshoot:
+            self._admission_scale *= self._config.eps_controller.scale_down_step
+        elif under_target:
+            self._admission_scale *= self._config.eps_controller.scale_up_step
+        else:
+            self._admission_scale += (1.0 - self._admission_scale) * self._config.eps_controller.scale_recovery_alpha
+
+        self._admission_scale = self._clamp(
+            self._admission_scale,
+            lower=self._config.eps_controller.min_admission_scale,
+            upper=self._config.eps_controller.max_admission_scale,
+        )
+
+        base_probability = (
+            self._config.demand.base_session_start_rate_per_idle_connector_minute
+            * demand_multiplier
+            * tick_seconds
+            / 60.0
+        )
+        if self._config.benchmark.enabled and self._config.benchmark.sustained_mode:
+            base_probability *= 1.2
+
+        probability_per_connector = self._clamp(
+            base_probability * self._admission_scale,
+            lower=0.0001,
+            upper=self._config.eps_controller.max_start_probability,
+        )
+
+        cap_by_share = int(len(available_connectors) * self._config.eps_controller.max_start_share_per_tick)
+        if under_target:
+            cap_by_share = max(1, cap_by_share)
+
+        events_per_new_session = max(1, self._config.eps_controller.events_per_new_session_immediate)
+        cap_by_headroom = max(0, (target_events_this_tick - pre_start_events_count) // events_per_new_session)
+        if under_target and pre_start_events_count < target_events_this_tick:
+            cap_by_headroom = max(1, cap_by_headroom)
+
+        if overshoot:
+            max_starts = 0
+        else:
+            max_starts = min(cap_by_share, cap_by_headroom)
+            if under_target and pre_start_events_count < target_events_this_tick:
+                max_starts = max(1, max_starts)
+
+        events = self._start_sessions_for_connectors(
+            now=now,
+            available_connectors=available_connectors,
+            max_starts=max_starts,
+            probability_per_connector=probability_per_connector,
+        )
+        return events, StartControlSnapshot(
+            admission_scale=self._admission_scale,
+            effective_probability=probability_per_connector,
+            effective_cap=max_starts,
+            blocked_overshoot=overshoot and max_starts == 0,
+        )
+
+    def _start_sessions_legacy(
+        self,
+        *,
+        now: datetime,
+        demand_multiplier: float,
+        observed_eps: float,
+        target_eps: float,
+        target_events_this_tick: int,
+        pre_start_events_count: int,
+        tick_seconds: float,
+        available_connectors: list[ConnectorState],
+    ) -> tuple[list[dict[str, object]], StartControlSnapshot]:
         deficit_ratio = 0.0
         if target_eps > 0:
             deficit_ratio = max(0.0, (target_eps - observed_eps) / target_eps)
@@ -234,15 +347,36 @@ class SessionEngine:
         probability_per_connector *= 1.0 + min(2.5, deficit_ratio * 2.5)
         if self._config.benchmark.enabled and self._config.benchmark.sustained_mode:
             probability_per_connector *= 1.2
-        probability_per_connector = min(0.85, max(0.0001, probability_per_connector))
+        probability_per_connector = min(self._config.eps_controller.max_start_probability, max(0.0001, probability_per_connector))
 
         max_starts = max(1, int(len(available_connectors) * 0.20))
+        remaining_event_budget = max(0, target_events_this_tick - pre_start_events_count)
         if remaining_event_budget > 0:
             max_starts = max(max_starts, int(remaining_event_budget / 2) + 1)
 
+        events = self._start_sessions_for_connectors(
+            now=now,
+            available_connectors=available_connectors,
+            max_starts=max_starts,
+            probability_per_connector=probability_per_connector,
+        )
+        return events, StartControlSnapshot(
+            admission_scale=1.0,
+            effective_probability=probability_per_connector,
+            effective_cap=max_starts,
+            blocked_overshoot=False,
+        )
+
+    def _start_sessions_for_connectors(
+        self,
+        *,
+        now: datetime,
+        available_connectors: list[ConnectorState],
+        max_starts: int,
+        probability_per_connector: float,
+    ) -> list[dict[str, object]]:
         events: list[dict[str, object]] = []
         started = 0
-
         for connector in available_connectors:
             if started >= max_starts:
                 break
@@ -276,6 +410,17 @@ class SessionEngine:
             started += 1
 
         return events
+
+    def _eps_bounds(self, target_eps: float) -> tuple[float, float]:
+        band_ratio = self._config.eps_controller.target_band_ratio
+        return (
+            max(0.0, target_eps * (1.0 - band_ratio)),
+            max(0.0, target_eps * (1.0 + band_ratio)),
+        )
+
+    @staticmethod
+    def _clamp(value: float, *, lower: float, upper: float) -> float:
+        return min(upper, max(lower, value))
 
     def _emit_meter_update(
         self,

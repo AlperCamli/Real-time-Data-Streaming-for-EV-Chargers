@@ -89,6 +89,21 @@ class DataQualityConfig:
     too_late_threshold_seconds: float
     out_of_order_delay_seconds_min: float
     out_of_order_delay_seconds_max: float
+    too_late_excluded_event_types: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EpsControllerConfig:
+    enabled: bool
+    target_band_ratio: float
+    scale_up_step: float
+    scale_down_step: float
+    scale_recovery_alpha: float
+    min_admission_scale: float
+    max_admission_scale: float
+    max_start_share_per_tick: float
+    events_per_new_session_immediate: int
+    max_start_probability: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +157,7 @@ class SimulatorConfig:
     session: SessionConfig
     faults: FaultConfig
     data_quality: DataQualityConfig
+    eps_controller: EpsControllerConfig
     benchmark: BenchmarkConfig
 
     def target_eps(self, monotonic_time_seconds: float) -> float:
@@ -165,6 +181,7 @@ def build_simulator_config(raw: Mapping[str, Any]) -> SimulatorConfig:
     session_raw = _as_mapping(raw.get("session"))
     faults_raw = _as_mapping(raw.get("faults"))
     quality_raw = _as_mapping(raw.get("data_quality"))
+    eps_controller_raw = _as_mapping(raw.get("eps_controller"))
     benchmark_raw = _as_mapping(raw.get("benchmark"))
     legacy_peak_raw = _as_mapping(raw.get("peak_hour"))
 
@@ -263,6 +280,12 @@ def build_simulator_config(raw: Mapping[str, Any]) -> SimulatorConfig:
         burst_cycle_seconds=max(10.0, _as_float(benchmark_raw.get("burst_cycle_seconds"), 90.0)),
     )
 
+    min_admission_scale = max(0.001, _as_float(eps_controller_raw.get("min_admission_scale"), 0.05))
+    max_admission_scale = max(
+        min_admission_scale,
+        _as_float(eps_controller_raw.get("max_admission_scale"), 3.0),
+    )
+
     return SimulatorConfig(
         mode=mode,
         producer=ProducerConfig(
@@ -333,6 +356,22 @@ def build_simulator_config(raw: Mapping[str, Any]) -> SimulatorConfig:
                 _as_float(quality_raw.get("out_of_order_delay_seconds_min"), 0.8),
                 _as_float(quality_raw.get("out_of_order_delay_seconds_max"), 4.0),
             ),
+            too_late_excluded_event_types=_parse_event_type_list(
+                quality_raw.get("too_late_excluded_event_types"),
+                default=("SESSION_START", "SESSION_STOP"),
+            ),
+        ),
+        eps_controller=EpsControllerConfig(
+            enabled=_as_bool(eps_controller_raw.get("enabled"), True),
+            target_band_ratio=min(0.95, max(0.0, _as_float(eps_controller_raw.get("target_band_ratio"), 0.10))),
+            scale_up_step=max(1.0, _as_float(eps_controller_raw.get("scale_up_step"), 1.08)),
+            scale_down_step=min(1.0, max(0.01, _as_float(eps_controller_raw.get("scale_down_step"), 0.80))),
+            scale_recovery_alpha=min(1.0, max(0.0, _as_float(eps_controller_raw.get("scale_recovery_alpha"), 0.20))),
+            min_admission_scale=min_admission_scale,
+            max_admission_scale=max_admission_scale,
+            max_start_share_per_tick=min(1.0, max(0.0, _as_float(eps_controller_raw.get("max_start_share_per_tick"), 0.20))),
+            events_per_new_session_immediate=max(1, _as_int(eps_controller_raw.get("events_per_new_session_immediate"), 2)),
+            max_start_probability=min(1.0, max(0.0, _as_float(eps_controller_raw.get("max_start_probability"), 0.85))),
         ),
         benchmark=benchmark,
     )
@@ -466,6 +505,18 @@ def _parse_hourly_weights(value: Any) -> tuple[float, ...]:
         if any(weight > 0 for weight in weights):
             return weights
     return DEFAULT_HOURLY_DEMAND_WEIGHTS
+
+
+def _parse_event_type_list(value: Any, *, default: tuple[str, ...]) -> tuple[str, ...]:
+    if isinstance(value, list):
+        normalized = tuple(
+            str(item).strip().upper()
+            for item in value
+            if str(item).strip()
+        )
+        if normalized:
+            return normalized
+    return default
 
 
 def _normalize_items(items: list[Any]) -> list[Any]:

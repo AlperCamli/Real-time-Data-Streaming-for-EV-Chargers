@@ -39,6 +39,7 @@ class QualityEventInjector:
         self._config = config
         self._rng = rng
         self._metrics = metrics
+        self._too_late_excluded_event_types = {value.upper() for value in config.too_late_excluded_event_types}
         self._delayed_events: list[tuple[float, int, dict[str, Any]]] = []
         self._delay_sequence = 0
 
@@ -73,7 +74,10 @@ class QualityEventInjector:
                 emitted.append(duplicate)
                 self._metrics.increment_duplicates()
 
-            if self._rng.random() < self._config.too_late_injection_rate:
+            if (
+                self._rng.random() < self._config.too_late_injection_rate
+                and str(event.get("event_type", "")).upper() not in self._too_late_excluded_event_types
+            ):
                 too_late = self._to_too_late_copy(event, now)
                 emitted.append(too_late)
                 self._metrics.increment_too_late()

@@ -7,8 +7,10 @@ import random
 import signal
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Sequence
 
 from src.common.logging import configure_logging
 from src.common.prometheus import OptionalPrometheusRegistry
@@ -26,7 +28,14 @@ from src.simulator.session_logic import SessionEngine
 DEFAULT_SIMULATOR_CONFIG_PATH = Path("config/simulator.default.yaml")
 
 
-def parse_args() -> argparse.Namespace:
+@dataclass(frozen=True, slots=True)
+class SimulatorShardConfig:
+    shard_index: int
+    shard_count: int
+    target_eps_scale: float
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ChargeSquare EV event simulator")
     parser.add_argument(
         "--config",
@@ -40,11 +49,53 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Optional runtime limit for local smoke runs (0 means infinite)",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help="0-based shard index for deterministic station partitioning",
+    )
+    parser.add_argument(
+        "--shard-count",
+        type=int,
+        default=1,
+        help="Total number of simulator shards",
+    )
+    parser.add_argument(
+        "--target-eps-scale",
+        type=float,
+        default=1.0,
+        help="Multiplier applied to the configured simulator target EPS",
+    )
+    return parser.parse_args(argv)
+
+
+def validate_shard_config(args: argparse.Namespace) -> SimulatorShardConfig:
+    shard_count = int(args.shard_count)
+    shard_index = int(args.shard_index)
+    target_eps_scale = float(args.target_eps_scale)
+
+    if shard_count < 1:
+        raise ValueError("shard_count must be >= 1")
+    if shard_index < 0 or shard_index >= shard_count:
+        raise ValueError("shard_index must satisfy 0 <= shard_index < shard_count")
+    if target_eps_scale <= 0:
+        raise ValueError("target_eps_scale must be > 0")
+
+    return SimulatorShardConfig(
+        shard_index=shard_index,
+        shard_count=shard_count,
+        target_eps_scale=target_eps_scale,
+    )
+
+
+def effective_target_eps(sim_config, monotonic_time_seconds: float, shard_config: SimulatorShardConfig) -> float:
+    return sim_config.target_eps(monotonic_time_seconds) * shard_config.target_eps_scale
 
 
 def main() -> None:
     args = parse_args()
+    shard_config = validate_shard_config(args)
     stop_event = threading.Event()
 
     service_settings = load_service_settings("simulator")
@@ -57,10 +108,16 @@ def main() -> None:
         json_logs=service_settings.log_json,
     )
 
-    rng = random.Random(sim_config.producer.seed)
+    rng = random.Random(sim_config.producer.seed + shard_config.shard_index)
     start_time = datetime.now(timezone.utc)
 
-    network = build_network(config=sim_config, rng=rng, start_time=start_time)
+    network = build_network(
+        config=sim_config,
+        rng=rng,
+        start_time=start_time,
+        shard_index=shard_config.shard_index,
+        shard_count=shard_config.shard_count,
+    )
     event_factory = EventFactory(
         producer_id=sim_config.producer.producer_id,
         schema_version=sim_config.producer.schema_version,
@@ -108,9 +165,13 @@ def main() -> None:
         extra={
             "mode": sim_config.mode,
             "config_path": str(args.config),
-            "stations": sim_config.network.station_count,
+            "configured_station_count": sim_config.network.station_count,
+            "stations": len(network.stations),
             "connectors": network.connector_count(),
             "target_eps": sim_config.network.target_event_rate,
+            "target_eps_scale": shard_config.target_eps_scale,
+            "shard_index": shard_config.shard_index,
+            "shard_count": shard_config.shard_count,
             "topic": TOPIC_EVENTS_RAW,
             "dry_run": sim_config.producer.dry_run,
             "metrics_endpoint": f"http://{service_settings.metrics_host}:{service_settings.metrics_port}/metrics",
@@ -125,7 +186,7 @@ def main() -> None:
             tick_started_monotonic = time.monotonic()
             now = datetime.now(timezone.utc)
 
-            target_eps = sim_config.target_eps(tick_started_monotonic)
+            target_eps = effective_target_eps(sim_config, tick_started_monotonic, shard_config)
             simulator_metrics.set_target_eps(target_eps)
             observed_eps = simulator_metrics.current_eps(tick_started_monotonic)
             generated_events = engine.generate_events(
@@ -134,6 +195,12 @@ def main() -> None:
                 observed_eps=observed_eps,
                 tick_seconds=sim_config.network.tick_interval_seconds,
             )
+            start_control = engine.last_start_control
+            simulator_metrics.set_admission_scale(start_control.admission_scale)
+            simulator_metrics.set_session_start_probability_effective(start_control.effective_probability)
+            simulator_metrics.set_session_start_cap_effective(start_control.effective_cap)
+            if start_control.blocked_overshoot:
+                simulator_metrics.increment_session_start_blocked_ticks()
 
             for event in generated_events:
                 event_type = str(event.get("event_type", "UNKNOWN"))

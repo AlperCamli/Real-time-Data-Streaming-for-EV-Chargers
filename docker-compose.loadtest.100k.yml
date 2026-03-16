@@ -4,6 +4,11 @@ services:
       SIMULATOR_CONFIG_PATH: config/simulator.loadtest.100k.yaml
     restart: unless-stopped
 
+  simulator-b:
+    environment:
+      SIMULATOR_CONFIG_PATH: config/simulator.loadtest.100k.yaml
+    restart: unless-stopped
+
   processor:
     environment:
       PROCESSOR_CONFIG_PATH: config/processor.loadtest.100k.yaml

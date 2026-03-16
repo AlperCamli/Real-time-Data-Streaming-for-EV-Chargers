@@ -8,7 +8,7 @@ scrape_configs:
       - targets: ["prometheus:9090"]
   - job_name: simulator
     static_configs:
-      - targets: ["simulator:9200"]
+      - targets: ["simulator:9200", "simulator-b:9201"]
   - job_name: processor
     static_configs:
       - targets: ["processor:9100", "processor-b:9100", "processor-c:9100", "processor-d:9100"]
