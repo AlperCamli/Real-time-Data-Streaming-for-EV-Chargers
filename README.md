@@ -1,272 +1,408 @@
-# ChargeSquare EV Data Engineering Case Study (Foundation)
+# ChargeSquare EV Charging Data Pipeline
 
-## Purpose
-This repository contains the foundation layer for an EV charging event pipeline case study.
+A Docker-first, Python-based data engineering case study for EV charging telemetry.
 
-The goal of this phase is to freeze shared contracts and local platform scaffolding so simulator, processor, and analytics implementation can proceed without structural rework.
+This repository implements a complete local pipeline:
 
-## Frozen Architecture
-Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Analytics/Reporting
+`Simulator -> Kafka -> Stream Processor -> Redis + ClickHouse -> Prometheus/Grafana`
 
-## Technology Stack
-- Python
-- Docker Compose
-- Kafka (transport)
-- Redis (serving state only)
-- ClickHouse (analytical/history system of record)
-- JSON event serialization
-- Optional: Prometheus + Grafana
+The system is built to demonstrate practical engineering judgment for a 5-7 day case-study scope: clear contracts, runnable architecture, explicit data quality policy, and measurable behavior under load.
 
-## Frozen Contracts Included
-- Kafka topics:
-  - `cs.ev.events.raw`
-  - `cs.ev.events.dlq`
-  - `cs.ev.events.late`
-- ClickHouse tables:
-  - `raw_events`
-  - `dead_letter_events`
-  - `late_events_rejected`
-  - `fact_sessions`
-  - `agg_station_minute`
-  - `agg_operator_hour`
-  - `agg_city_day_faults`
-- Redis key helpers:
-  - `station:{station_id}:state`
-  - `station:{station_id}:connector:{connector_id}:state`
-  - `session:{session_id}:state`
-  - `dedup:{event_id}`
-- Canonical event envelope + payload models for:
-  - `SESSION_START`
-  - `METER_UPDATE`
-  - `STATUS_CHANGE`
-  - `SESSION_STOP`
-  - `HEARTBEAT`
-  - `FAULT_ALERT`
+## Problem Statement
 
-## Repository Structure
-```text
-.
-├── Agents.md
-├── Skills.md
-├── README.md
-├── docker-compose.yml
-├── .env.example
-├── config/
-│   ├── simulator.default.yaml
-│   ├── simulator.benchmark.yaml
-│   ├── processor.default.yaml
-│   ├── benchmarks/
-│   │   ├── 1k.yaml
-│   │   ├── 10k.yaml
-│   │   ├── 50k.yaml
-│   │   └── 100k.yaml
-│   └── prometheus/prometheus.yml
-├── src/
-│   ├── benchmarks/
-│   ├── common/
-│   │   ├── settings.py
-│   │   ├── logging.py
-│   │   ├── metrics.py
-│   │   ├── event_types.py
-│   │   ├── topic_names.py
-│   │   ├── table_names.py
-│   │   ├── redis_keys.py
-│   │   └── schemas/
-│   │       ├── event_envelope.py
-│   │       ├── event_payloads.py
-│   │       └── validation.py
-│   ├── simulator/main.py
-│   └── processor/
-├── sql/clickhouse/
-│   ├── 001_create_raw_events.sql
-│   ├── 002_create_dead_letter_events.sql
-│   ├── 003_create_late_events_rejected.sql
-│   ├── 004_create_fact_sessions.sql
-│   ├── 005_create_agg_station_minute.sql
-│   ├── 006_create_agg_operator_hour.sql
-│   └── 007_create_agg_city_day_faults.sql
-├── dashboards/grafana/
-│   ├── dashboards/
-│   ├── provisioning/
-│   └── README.md
-├── notebooks/README.md
-└── tests/
-    ├── unit/
-    └── integration/
+EV charging networks produce high-volume, event-time telemetry that must satisfy two competing needs:
+
+- low-latency serving state for operational views
+- durable analytical history for audits, KPIs, and session-level reporting
+
+This project models that split explicitly:
+
+- Redis is used for current serving state and dedup marker TTL keys
+- ClickHouse is used for historical record, audit tables, finalized session facts, and minimal aggregates
+
+## Architecture At A Glance
+
+```mermaid
+flowchart LR
+    A[EV Event Simulator\nPython service] -->|JSON events| B[Kafka topic\ncs.ev.events.raw]
+    B --> C[Stream Processor\nPython service]
+
+    C -->|Serving state| D[(Redis)]
+    C -->|Raw + audit + facts + aggs| E[(ClickHouse)]
+    C -->|Invalid events| F[Kafka DLQ\ncs.ev.events.dlq]
+    C -->|Optional late mirror| G[Kafka late topic\ncs.ev.events.late]
+
+    D --> H[Operational reads]
+    E --> I[Analytics / reporting queries]
+
+    J[Prometheus] --> K[Grafana dashboards]
+    A --> J
+    C --> J
+    E --> J
 ```
 
-## Local Startup (Docker-First)
-1. Copy env file:
-   - `cp .env.example .env`
-2. Start full pipeline (infra + processor + simulator):
-   - `docker compose up -d --build`
-3. Start the scaled 10k load-test stack (4 processor instances):
-   - `docker compose -f docker-compose.yml -f docker-compose.loadtest.10k.yml -f docker-compose.loadtest.scaled.yml up -d --build`
-4. Start the scaled 100k load-test stack (4 processor instances):
-   - `docker compose -f docker-compose.yml -f docker-compose.loadtest.100k.yml -f docker-compose.loadtest.scaled.yml up -d --build`
-5. Start optional observability stack:
-   - `docker compose --profile observability up -d prometheus grafana`
+## Layer Responsibilities
 
-Runtime checks:
-- `docker compose ps`
-- `docker compose -f docker-compose.yml -f docker-compose.loadtest.10k.yml -f docker-compose.loadtest.scaled.yml ps`
-- `docker logs -f cs-processor`
-- `docker logs -f cs-simulator`
-- Prometheus targets: `http://localhost:9090/targets`
+- Simulator: emits realistic EV charging events, including controlled duplicates, out-of-order, and too-late injections.
+- Kafka: buffers and transports immutable event streams between producer and processor.
+- Stream Processor: validates, deduplicates, classifies lateness, updates state, and writes analytical sinks.
+- Redis: serves current operational state and dedup TTL markers.
+- ClickHouse: persists historical/audit/fact/aggregate data for analytical queries.
+- Prometheus/Grafana: collects and visualizes throughput, lag, latency, and sink-health metrics.
 
-Shutdown commands:
-- Default stack: `docker compose down --remove-orphans`
-- Scaled 10k stack: `docker compose -f docker-compose.yml -f docker-compose.loadtest.10k.yml -f docker-compose.loadtest.scaled.yml down --remove-orphans`
-- Scaled 100k stack: `docker compose -f docker-compose.yml -f docker-compose.loadtest.100k.yml -f docker-compose.loadtest.scaled.yml down --remove-orphans`
+## Technology Choices And Rationale
 
-## Python Dependencies (Optional for Host-Run)
-- Recommended isolated env:
-  - `python3 -m venv .venv && source .venv/bin/activate`
-- `pip install kafka-python`
-- `pip install redis`
-- Optional for ClickHouse writes: `pip install clickhouse-driver`
-- Optional for YAML-native config files: `pip install pyyaml`
-- Optional for metrics endpoints: `pip install prometheus-client`
+- Python: fast iteration for simulator + processor + benchmark tooling in one language.
+- Kafka: decouples producer/consumer rates, supports partitioned scaling and replayable transport.
+- Redis: low-latency hash-based serving state with timestamp-guard freshness and TTL-based dedup keys.
+- ClickHouse: append-friendly analytical store with efficient MergeTree layouts for time-based facts and aggregates.
+- Docker Compose: single-command local orchestration with deterministic service wiring.
+- Prometheus + Grafana: metrics-first observability for throughput, lag, latency, and sink health.
 
-## Service Entry Points (Host-Run Fallback)
-- Simulator:
-  - `python -m src.simulator.main --config config/simulator.default.yaml`
-  - smoke test: `python -m src.simulator.main --config config/simulator.default.yaml --max-runtime-seconds 20`
-  - benchmark profile: `python -m src.simulator.main --config config/simulator.benchmark.yaml`
-- Processor:
-  - `python -m src.processor.main --config config/processor.default.yaml`
-  - smoke loop: `python -m src.processor.main --config config/processor.default.yaml --max-loops 10`
-- Metrics endpoints:
-  - simulator: `http://localhost:9200/metrics`
-  - processor: `http://localhost:9100/metrics`
+## Frozen Contracts Implemented
 
-## Benchmark Runner
-- Run a tier profile:
-  - `python -m src.benchmarks.run --profile config/benchmarks/1k.yaml`
-- Run without query benchmark:
-  - `python -m src.benchmarks.run --profile config/benchmarks/10k.yaml --skip-query-benchmark`
-- Launch simulator+processor from the runner:
-  - `python -m src.benchmarks.run --profile config/benchmarks/50k.yaml --launch-services`
+### Kafka Topics
 
-## Heavy Load Profiles (1k / 10k / 100k EPS)
-Available load profiles:
+- `cs.ev.events.raw`
+- `cs.ev.events.dlq`
+- `cs.ev.events.late` (optional mirror for late-rejected events)
 
-- 1k EPS sustained:
-  - simulator: `config/simulator.loadtest.1k.yaml`
-  - processor: `config/processor.loadtest.1k.yaml`
-  - compose override: `docker-compose.loadtest.yml`
-- 10k EPS sustained target:
-  - simulator: `config/simulator.loadtest.10k.yaml`
-  - processor: `config/processor.loadtest.10k.yaml`
-  - compose override: `docker-compose.loadtest.10k.yml`
-- 100k EPS stress target:
-  - simulator: `config/simulator.loadtest.100k.yaml`
-  - processor: `config/processor.loadtest.100k.yaml`
-  - compose override: `docker-compose.loadtest.100k.yml`
+### Event Types
 
-Run commands:
+- `SESSION_START`
+- `METER_UPDATE`
+- `STATUS_CHANGE`
+- `SESSION_STOP`
+- `HEARTBEAT`
+- `FAULT_ALERT`
 
-- 1k: `docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d --build`
-- 10k: `docker compose -f docker-compose.yml -f docker-compose.loadtest.10k.yml up -d --build`
-- 100k: `docker compose -f docker-compose.yml -f docker-compose.loadtest.100k.yml up -d --build`
-- 10k scaled: `docker compose -f docker-compose.yml -f docker-compose.loadtest.10k.yml -f docker-compose.loadtest.scaled.yml up -d --build`
-- 100k scaled: `docker compose -f docker-compose.yml -f docker-compose.loadtest.100k.yml -f docker-compose.loadtest.scaled.yml up -d --build`
+### ClickHouse Tables
 
-Scaling note:
-- `docker-compose.loadtest.scaled.yml` adds `processor-b`, `processor-c`, and `processor-d`.
-- Always combine the scaled override with the base compose file and one load-test override.
-- The extra processor containers share the same consumer group and do not expose host ports.
+- `raw_events`
+- `dead_letter_events`
+- `late_events_rejected`
+- `fact_sessions`
+- `agg_station_minute`
+- `agg_operator_hour`
+- `agg_city_day_faults`
 
-How to configure/tune each tier:
+### Redis Key Patterns
 
-- Simulator knobs:
-  - `network.target_event_rate`: requested EPS target.
-  - `network.station_count` and `network.connector_count_distribution`: capacity ceiling.
-  - `network.tick_interval_seconds`: scheduling resolution.
-  - `demand.base_session_start_rate_per_idle_connector_minute`: pressure for new sessions.
-  - `session.meter_update_interval_seconds_min/max`: update frequency for active sessions.
-- Processor knobs:
-  - `consumer.max_poll_records`: records per poll.
-  - `consumer.poll_timeout_ms`: loop wait time (lower = more responsive, higher CPU).
-  - `sinks.clickhouse_batch_size` and `sinks.clickhouse_flush_interval_seconds`: sink throughput vs latency.
-  - `sinks.kafka_batch_size`: throughput for DLQ/late topic writes.
+- `station:{station_id}:state`
+- `station:{station_id}:connector:{connector_id}:state`
+- `session:{session_id}:state`
+- `dedup:{event_id}`
 
-How to decide if a load test is successful:
+## End-To-End Data Flow
 
-1. Let the system warm up 2 minutes, then observe at least 10 minutes.
-2. Track Prometheus queries:
-   - `rate(events_generated_total[1m])`
-   - `rate(events_accepted_total[1m])`
-   - `rate(events_accepted_total[1m]) / clamp_min(rate(events_generated_total[1m]), 1)`
-   - `kafka_consumer_lag`
-   - `deriv(kafka_consumer_lag[5m])`
-   - `increase(clickhouse_insert_failures_total[10m])`
-3. Judge result with this rubric:
-   - PASS: accepted EPS is >=80% of tier target, acceptance ratio is >=0.90, lag derivative stays near 0 (or negative), and insert failures do not grow.
-   - PARTIAL: accepted EPS is 50-80% of target or lag grows slowly but system remains stable (no crash loop).
-   - FAIL: accepted EPS <50% of target, lag grows steeply for the full window, or services repeatedly restart.
+1. Simulator generates canonical JSON envelope events with realistic station/session lifecycle behavior.
+2. Events are published to Kafka raw topic `cs.ev.events.raw`.
+3. Processor consumes in batches with manual offset commits.
+4. Processor executes parse + schema validation + semantic validation.
+5. Invalid records are routed to Kafka DLQ and ClickHouse `dead_letter_events`.
+6. Valid records are deduplicated by `event_id` (Redis TTL backend, in-memory fallback).
+7. Lateness is classified from `event_time` against receive time.
+8. Too-late events are rejected into `late_events_rejected` (and optionally mirrored to Kafka late topic).
+9. Accepted events update in-memory session working state and aggregate accumulators.
+10. Accepted events write raw history to ClickHouse and serving state to Redis.
+11. Session terminal/timeout paths finalize append-once rows into `fact_sessions`.
+12. Aggregates flush finalized windows into aggregate tables.
+13. Sink worker flush succeeds -> dedup reservations commit -> Kafka offsets commit.
 
-Notes:
-- 100k is a stress profile for bottleneck discovery and may not be fully reachable on a laptop.
-- If lag grows persistently, increase processor sink batch sizes or reduce simulator intensity.
+## Event Processing Semantics
 
-Quick data validation:
-- `http://localhost:8123/?user=default&password=password&query=SELECT%20count()%20FROM%20raw_events`
-- `http://localhost:8123/?user=default&password=password&query=SELECT%20count()%20FROM%20agg_station_minute`
+### Validation
 
-Benchmark outputs are written under:
+- Parse-level failures: empty/malformed payloads.
+- Schema-level failures: missing required envelope fields or invalid payload model.
+- Semantic failures: business checks (session identity mismatch, invalid stop without active session, invalid numeric constraints).
+- Semantic warnings are tracked separately from hard failures.
+
+### Deduplication
+
+- Dedup key: `event_id`.
+- Policy: duplicates are counted and discarded.
+- Implementation detail: staged reserve/commit model.
+- On sink failure, reserved IDs are released; on sink success, IDs are committed with TTL.
+
+### Late Event Policy
+
+- Business time is `event_time`.
+- `allowed_lateness_seconds` is configurable (default: 600s).
+- `0 < lateness <= allowed`: accepted-late.
+- `lateness > allowed`: rejected to `late_events_rejected`.
+- No retro-correction from ultra-late rejected events.
+
+### Session Finalization
+
+- Working session state is maintained in-memory inside processor.
+- Finalization paths are `normal_stop`, `fault_termination`, and `inactivity_timeout`.
+- `fact_sessions` rows are append-once final facts.
+
+### Redis Freshness Guards
+
+- Redis writes are timestamp-guarded with `last_event_time_ms` via Lua script.
+- Older/equal event-time writes are skipped as stale (counted in metrics).
+
+## Storage Design
+
+### Redis (Serving State)
+
+Redis stores only current-state materializations and dedup markers.
+
+- Station hash: current status, power, active session count, fault flag, last timestamps.
+- Connector hash: connector status/session/power/meter/fault view.
+- Session hash: live/finalized compact session snapshot with TTL.
+- Dedup key: `dedup:{event_id}` TTL marker.
+
+Redis is intentionally not used as historical source of truth.
+
+### ClickHouse (System Of Record)
+
+ClickHouse stores immutable event history, audits, final facts, and minimal pre-aggregates.
+
+- `raw_events`: accepted event history partitioned by event month.
+- `dead_letter_events`: parse/schema/semantic rejects with reason and raw payload.
+- `late_events_rejected`: rejected late events with computed lateness.
+- `fact_sessions`: finalized append-once session facts.
+- `agg_station_minute`, `agg_operator_hour`, `agg_city_day_faults`: finalized window rows.
+
+Aggregate rows are emitted only when windows are complete (or forced on shutdown), not per-event upserts.
+
+## Run The Project
+
+### 1) Prerequisites
+
+- Docker + Docker Compose
+- Optional host Python for benchmarks/tests: Python 3.12+
+
+### 2) Configure Environment
+
+```bash
+cp .env.example .env
+```
+
+### 3) Start Full Stack
+
+```bash
+docker compose up -d --build
+```
+
+This starts:
+
+- Zookeeper, Kafka, Kafka topic init job
+- Redis
+- ClickHouse (DDL auto-init from `sql/clickhouse/*.sql` on first startup)
+- Processor
+- Simulator
+- Prometheus
+- Grafana
+
+### 4) Check Health
+
+```bash
+docker compose ps
+docker logs -f cs-processor
+docker logs -f cs-simulator
+```
+
+### 5) Access Endpoints
+
+- Grafana: `http://localhost:3000` (admin / `Jm7TRdE@mZYZ98`)
+- Prometheus: `http://localhost:9090`
+- Processor metrics: `http://localhost:9100/metrics`
+- Simulator metrics: `http://localhost:9200/metrics`
+- ClickHouse HTTP API: `http://localhost:8123`
+
+## Load-Test Compose Profiles
+
+### 1k tier
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d --build
+```
+
+### 10k tier (single-instance override)
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.loadtest.10k.yml up -d --build
+```
+
+### 10k tier (scaled)
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.loadtest.10k.yml -f docker-compose.loadtest.scaled.yml up -d --build
+```
+
+### 100k stress tier (scaled)
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.loadtest.100k.yml -f docker-compose.loadtest.scaled.yml up -d --build
+```
+
+Scaled mode adds `simulator-b`, `processor-b`, `processor-c`, `processor-d`.
+In scaled compose, simulator target EPS scaling is intentionally split (`0.5` + `0.4`) to reduce overshoot pressure.
+
+## Verify Data Quickly
+
+### ClickHouse counts
+
+```bash
+curl "http://localhost:8123/?user=default&password=password&query=SELECT%20count()%20FROM%20raw_events"
+curl "http://localhost:8123/?user=default&password=password&query=SELECT%20count()%20FROM%20fact_sessions"
+curl "http://localhost:8123/?user=default&password=password&query=SELECT%20count()%20FROM%20late_events_rejected"
+```
+
+### Redis serving keys
+
+```bash
+docker exec -it cs-redis redis-cli --scan --pattern 'station:*:state' | head
+docker exec -it cs-redis redis-cli --scan --pattern 'session:*:state' | head
+```
+
+## Benchmarking And Observability
+
+### Benchmark runner
+
+Run from host (if Python deps are installed) or from container.
+
+Host example:
+
+```bash
+python3 -m src.benchmarks.run --profile config/benchmarks/1k.yaml
+```
+
+Container example:
+
+```bash
+docker compose run --rm processor python -m src.benchmarks.run \
+  --profile config/benchmarks/1k.yaml \
+  --simulator-metrics-url http://simulator:9200/metrics \
+  --processor-metrics-url http://processor:9100/metrics
+```
+
+Outputs are written to:
+
 - `benchmark_results/runs/<run_id>/result.json`
 - `benchmark_results/runs/<run_id>/result.csv`
 - `benchmark_results/runs/<run_id>/summary.md`
-- `benchmark_results/latest/`
-- `benchmark_results/summary.json`
-- `benchmark_results/summary.csv`
-- `benchmark_results/summary.md`
+- `benchmark_results/latest/*`
+- `benchmark_results/summary.{json,csv,md}`
 
-## Implemented In This Phase
-- Repository skeleton and modular package layout
-- Frozen naming constants and shared contracts
-- Canonical envelope/payload schema models
-- Validation scaffolding (required fields, event type, timestamp parsing, semantic hooks)
-- Docker Compose platform foundation
-- ClickHouse DDL placeholders for all frozen tables
-- Simulator implementation with:
-  - modular station/connector/session domain model
-  - configurable network generation (100+ stations, 1-4 connector distribution, operator/location/brand weights)
-  - realistic lifecycle generation (`SESSION_START -> METER_UPDATE* -> SESSION_STOP`)
-  - heartbeat and low-frequency fault behavior
-  - duplicate/out-of-order/too-late injection hooks
-  - Kafka publishing to `cs.ev.events.raw` with batching and structured error logging
-  - internal metrics hooks for throughput, event counts, faults, injections, failures, active sessions
-- Stream processor implementation with:
-  - Kafka consume loop from `cs.ev.events.raw` with manual commit after sink flush
-  - staged parse -> schema validation -> semantic validation -> dedup -> lateness classification -> routing
-  - DLQ routing to Kafka `cs.ev.events.dlq` plus ClickHouse `dead_letter_events`
-  - late rejection routing to ClickHouse `late_events_rejected` and optional Kafka late topic
-  - Redis dedup (`dedup:{event_id}`) with in-memory fallback
-  - Redis serving-state sink (`station`, `connector`, `session`) with timestamp guards and event-type lifecycle behavior
-  - ClickHouse batched append sink for `raw_events`, `dead_letter_events`, `late_events_rejected`, `fact_sessions`, and frozen aggregate tables
-  - processor-side session working state with deterministic finalization (`normal_stop`, `fault_termination`, `inactivity_timeout`)
-  - timeout sweeper for abandoned sessions and Redis cleanup/expiry behavior for session working state
-  - minimal in-memory aggregate windows flushed as finalized rows for:
-    - `agg_station_minute`
-    - `agg_operator_hour`
-    - `agg_city_day_faults`
-  - benchmark-friendly sink/finalization counters and latency/batch histograms
+### Built-in benchmark tiers
 
-## Deferred To Later Phases
-- Advanced retro-correction and backfill/recompute workflows
-- Final polished dashboard design and submission narrative
+- `config/benchmarks/1k.yaml` (sustained)
+- `config/benchmarks/10k.yaml` (sustained)
+- `config/benchmarks/50k.yaml` (burst)
+- `config/benchmarks/100k.yaml` (stress)
 
-## Troubleshooting
-- `http://localhost:8123/` returning `OK` is expected. ClickHouse HTTP uses `/?query=...`.
-- ClickHouse Prometheus metrics are exposed on `http://localhost:9363/metrics`.
-- In Docker-first mode, Prometheus scrapes `simulator:9200` and `processor:9100` over the compose network.
-- If targets are down, confirm the app containers are running:
-  - `docker compose ps`
-  - `docker logs --tail=100 cs-processor`
-  - `docker logs --tail=100 cs-simulator`
-- If processor consumes but accepts `0` with high `too_late_rejected_total`, you are likely replaying stale Kafka history.
-  - test-only reset (deletes ClickHouse/Grafana volumes and restarts clean):
-  - `docker compose down -v --remove-orphans`
-  - `docker compose up -d --build`
+### Metrics tracked
+
+- Throughput: generated/accepted EPS
+- Quality: parse/schema/semantic failures, duplicates, too-late rejects, DLQ routes
+- Lag: Kafka consumer lag
+- Latency: ingest lag, processor/e2e, Redis write, ClickHouse insert
+- Session finalization counters by reason
+- ClickHouse row-write counters by table
+
+### Grafana dashboards
+
+- `ChargeSquare Pipeline Overview`
+- `ChargeSquare ClickHouse + Sinks`
+
+## Results And Bottlenecks (Current Repository State)
+
+### What is evidenced in-repo
+
+- End-to-end implementation for simulator, processor, sinks, metrics, and benchmark tooling.
+- Automated test coverage exists and passes locally:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+```
+
+Current observed result in this repository execution context:
+
+- `Ran 39 tests ... OK`
+
+### Benchmark evidence status
+
+- No committed `benchmark_results/` artifacts were present at authoring time.
+- Therefore, this README does not claim final sustained EPS or latency achievements.
+- The benchmark framework is implemented and ready to generate auditable results.
+
+### Expected bottleneck surfaces at higher load
+
+Based on the implemented design and instrumentation, likely limiting stages are:
+
+- ClickHouse insert latency (single processor sink worker path per processor instance)
+- Kafka consumer lag growth under insufficient processor parallelism/batch sizing
+- Redis write amplification from frequent serving-state updates
+- Python per-event overhead at extreme EPS stress tiers
+
+## Trade-Offs And Limitations
+
+- Single-node local topology (single Kafka broker, single Redis, single ClickHouse) for case-study simplicity.
+- Exactly-once semantics are not claimed; design uses at-least-once + dedup by `event_id`.
+- Session working state is in-memory in processor; state is not checkpointed across processor restarts.
+- Aggregates are in-memory window accumulations flushed as finalized rows, not continuous OLAP MV pipelines.
+- Ultra-late rejected events are intentionally not used for historical retro-correction.
+- Optional Kafka late-topic mirror exists; canonical rejection audit remains ClickHouse `late_events_rejected`.
+
+## Implemented vs Partial vs Deferred
+
+### Implemented
+
+- Full simulator -> Kafka -> processor -> Redis/ClickHouse flow
+- Parse/schema/semantic validation and DLQ routing
+- Dedup reserve/commit model with Redis TTL backend
+- Lateness classification and late-reject table writes
+- Session state machine + timeout sweeper + append-once `fact_sessions`
+- Finalized aggregate row emission for all three aggregate tables
+- Prometheus metrics and provisioned Grafana dashboards
+- Benchmark runner + profile system + result persistence
+- Load-test Compose overrides including scaled topology
+
+### Partially implemented
+
+- Benchmark methodology/tooling is complete, but repository does not include final benchmark run artifacts.
+- Late-event Kafka mirror is available but should be treated as optional observability path, not primary audit sink.
+
+### Intentionally deferred
+
+- Multi-node production hardening (HA Kafka/Redis/ClickHouse)
+- Schema registry / Avro-Protobuf evolution workflow
+- Exactly-once transactional guarantees end-to-end
+- Notebook/report assets beyond minimal placeholders
+
+## Future Improvements
+
+1. Commit benchmark artifacts for 1k/10k/50k/100k with hardware metadata and sustained windows.
+2. Add processor horizontal scale guidance tied to Kafka partitioning strategy.
+3. Move session working state to recoverable store if crash recovery guarantees are needed.
+4. Add ClickHouse materialized-view pipeline for larger aggregate portfolios.
+5. Add schema-registry based contract evolution tests.
+
+## Project Layout
+
+```text
+config/                    runtime and benchmark profiles
+sql/clickhouse/            ClickHouse DDL (raw/audit/fact/agg)
+src/simulator/             event generation and quality injection
+src/processor/             ingestion, validation, routing, sinks, finalization
+src/benchmarks/            benchmark runner and summary materialization
+dashboards/grafana/        provisioned dashboards and datasource config
+tests/                     unit-style coverage for key semantics
+```
+
+## Shutdown
+
+```bash
+docker compose down --remove-orphans
+```
+
+To reset state volumes as well:
+
+```bash
+docker compose down -v --remove-orphans
+```

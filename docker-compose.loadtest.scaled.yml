@@ -34,7 +34,55 @@ x-processor-template: &processor-template
     CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-password}
     CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-default}
 
+x-simulator-template: &simulator-template
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: chargesquare-app:latest
+  restart: unless-stopped
+  depends_on:
+    kafka-init:
+      condition: service_completed_successfully
+  command:
+    [
+      "sh",
+      "-c",
+      "python -m src.simulator.main --config $${SIMULATOR_CONFIG_PATH:-config/simulator.default.yaml} --shard-index $${SIMULATOR_SHARD_INDEX:-0} --shard-count $${SIMULATOR_SHARD_COUNT:-1} --target-eps-scale $${SIMULATOR_TARGET_EPS_SCALE:-1.0}",
+    ]
+  environment: &simulator-environment
+    APP_ENV: ${APP_ENV:-local}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    LOG_JSON: ${LOG_JSON:-false}
+    METRICS_ENABLED: ${METRICS_ENABLED:-true}
+    METRICS_HOST: 0.0.0.0
+    SIMULATOR_METRICS_PORT: ${SIMULATOR_METRICS_PORT:-9200}
+    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    KAFKA_TOPIC_RAW: ${KAFKA_TOPIC_RAW:-cs.ev.events.raw}
+    KAFKA_TOPIC_DLQ: ${KAFKA_TOPIC_DLQ:-cs.ev.events.dlq}
+    KAFKA_TOPIC_LATE: ${KAFKA_TOPIC_LATE:-cs.ev.events.late}
+
 services:
+  simulator:
+    command:
+      [
+        "sh",
+        "-c",
+        "python -m src.simulator.main --config $${SIMULATOR_CONFIG_PATH:-config/simulator.default.yaml} --shard-index 0 --shard-count 2 --target-eps-scale 0.5",
+      ]
+    environment:
+      SIMULATOR_METRICS_PORT: 9200
+
+  simulator-b:
+    <<: *simulator-template
+    container_name: cs-simulator-b
+    environment:
+      <<: *simulator-environment
+      SIMULATOR_METRICS_PORT: 9201
+      SIMULATOR_SHARD_INDEX: 1
+      SIMULATOR_SHARD_COUNT: 2
+      SIMULATOR_TARGET_EPS_SCALE: 0.4
+    ports: []
+
   processor-b:
     <<: *processor-template
     container_name: cs-processor-b

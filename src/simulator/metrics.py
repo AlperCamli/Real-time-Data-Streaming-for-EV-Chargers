@@ -17,10 +17,14 @@ COUNTER_DUPLICATES_INJECTED = "duplicates_injected_total"
 COUNTER_OUT_OF_ORDER_INJECTED = "out_of_order_injected_total"
 COUNTER_TOO_LATE_INJECTED = "too_late_injected_total"
 COUNTER_PRODUCE_FAILURES = "produce_failures_total"
+COUNTER_SESSION_START_BLOCKED_TICKS = "session_start_blocked_ticks_total"
 
 GAUGE_TARGET_EPS = "target_eps"
 GAUGE_ACTIVE_SESSIONS = "active_sessions"
 GAUGE_ACTUAL_EPS = "actual_generated_eps"
+GAUGE_ADMISSION_SCALE = "admission_scale"
+GAUGE_SESSION_START_PROBABILITY_EFFECTIVE = "session_start_probability_effective"
+GAUGE_SESSION_START_CAP_EFFECTIVE = "session_start_cap_effective"
 
 
 @dataclass(slots=True)
@@ -49,9 +53,13 @@ class SimulatorMetrics:
         self._prom_out_of_order_injected = None
         self._prom_too_late_injected = None
         self._prom_produce_failures = None
+        self._prom_session_start_blocked_ticks = None
         self._prom_target_eps = None
         self._prom_actual_eps = None
         self._prom_active_sessions = None
+        self._prom_admission_scale = None
+        self._prom_session_start_probability_effective = None
+        self._prom_session_start_cap_effective = None
 
         if prometheus is not None and prometheus.enabled:
             self._prom_events_generated_total = prometheus.counter(
@@ -83,6 +91,10 @@ class SimulatorMetrics:
                 COUNTER_PRODUCE_FAILURES,
                 "Total simulator publish failures",
             )
+            self._prom_session_start_blocked_ticks = prometheus.counter(
+                COUNTER_SESSION_START_BLOCKED_TICKS,
+                "Total simulator ticks where session starts were blocked due to overshoot",
+            )
             self._prom_target_eps = prometheus.gauge(
                 GAUGE_TARGET_EPS,
                 "Current simulator target events-per-second",
@@ -94,6 +106,18 @@ class SimulatorMetrics:
             self._prom_active_sessions = prometheus.gauge(
                 GAUGE_ACTIVE_SESSIONS,
                 "Current active sessions in simulator network state",
+            )
+            self._prom_admission_scale = prometheus.gauge(
+                GAUGE_ADMISSION_SCALE,
+                "Current EPS admission scale factor",
+            )
+            self._prom_session_start_probability_effective = prometheus.gauge(
+                GAUGE_SESSION_START_PROBABILITY_EFFECTIVE,
+                "Current effective session-start probability",
+            )
+            self._prom_session_start_cap_effective = prometheus.gauge(
+                GAUGE_SESSION_START_CAP_EFFECTIVE,
+                "Current effective per-tick session-start cap",
             )
 
     def increment_generated(self, event_type: str, amount: int = 1) -> None:
@@ -124,6 +148,10 @@ class SimulatorMetrics:
         self._registry.increment(COUNTER_PRODUCE_FAILURES, amount)
         _inc_counter(self._prom_produce_failures, amount)
 
+    def increment_session_start_blocked_ticks(self, amount: int = 1) -> None:
+        self._registry.increment(COUNTER_SESSION_START_BLOCKED_TICKS, amount)
+        _inc_counter(self._prom_session_start_blocked_ticks, amount)
+
     def set_target_eps(self, eps: float) -> None:
         bounded = max(0.0, float(eps))
         self._registry.set_gauge(GAUGE_TARGET_EPS, bounded)
@@ -135,6 +163,24 @@ class SimulatorMetrics:
         self._registry.set_gauge(GAUGE_ACTIVE_SESSIONS, bounded)
         if self._prom_active_sessions is not None:
             self._prom_active_sessions.set(bounded)
+
+    def set_admission_scale(self, scale: float) -> None:
+        bounded = max(0.0, float(scale))
+        self._registry.set_gauge(GAUGE_ADMISSION_SCALE, bounded)
+        if self._prom_admission_scale is not None:
+            self._prom_admission_scale.set(bounded)
+
+    def set_session_start_probability_effective(self, value: float) -> None:
+        bounded = max(0.0, float(value))
+        self._registry.set_gauge(GAUGE_SESSION_START_PROBABILITY_EFFECTIVE, bounded)
+        if self._prom_session_start_probability_effective is not None:
+            self._prom_session_start_probability_effective.set(bounded)
+
+    def set_session_start_cap_effective(self, cap: int) -> None:
+        bounded = float(max(0, int(cap)))
+        self._registry.set_gauge(GAUGE_SESSION_START_CAP_EFFECTIVE, bounded)
+        if self._prom_session_start_cap_effective is not None:
+            self._prom_session_start_cap_effective.set(bounded)
 
     def observe_emitted(self, count: int, now_monotonic: float) -> float:
         self._emissions.append(EmissionPoint(timestamp_monotonic=now_monotonic, count=max(0, count)))

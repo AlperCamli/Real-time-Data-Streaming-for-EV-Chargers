@@ -153,7 +153,23 @@
     "too_late_injection_rate": 0.004,
     "too_late_threshold_seconds": 900,
     "out_of_order_delay_seconds_min": 0.8,
-    "out_of_order_delay_seconds_max": 4.0
+    "out_of_order_delay_seconds_max": 4.0,
+    "too_late_excluded_event_types": [
+      "SESSION_START",
+      "SESSION_STOP"
+    ]
+  },
+  "eps_controller": {
+    "enabled": true,
+    "target_band_ratio": 0.10,
+    "scale_up_step": 1.08,
+    "scale_down_step": 0.80,
+    "scale_recovery_alpha": 0.20,
+    "min_admission_scale": 0.05,
+    "max_admission_scale": 3.0,
+    "max_start_share_per_tick": 0.20,
+    "events_per_new_session_immediate": 2,
+    "max_start_probability": 0.85
   },
   "benchmark": {
     "enabled": false,

@@ -1,0 +1,27 @@
+WITH stats AS (
+    SELECT
+        avg(avg_power_kw) AS mean_power,
+        stddevPop(avg_power_kw) AS std_power
+    FROM fact_sessions
+    WHERE avg_power_kw IS NOT NULL
+      AND session_start_time >= now() - INTERVAL 30 DAY
+)
+SELECT
+    fs.session_id,
+    fs.operator_id,
+    fs.station_id,
+    fs.connector_id,
+    fs.vehicle_brand,
+    fs.session_start_time,
+    fs.session_end_time,
+    round(fs.avg_power_kw, 2) AS avg_power_kw,
+    round(s.mean_power, 2) AS fleet_mean_power_kw,
+    round(s.std_power, 2) AS fleet_std_power_kw,
+    round((fs.avg_power_kw - s.mean_power) / nullIf(s.std_power, 0), 2) AS z_score
+FROM fact_sessions fs
+CROSS JOIN stats s
+WHERE fs.avg_power_kw IS NOT NULL
+  AND fs.session_start_time >= now() - INTERVAL 30 DAY
+  AND abs((fs.avg_power_kw - s.mean_power) / nullIf(s.std_power, 0)) > 2
+ORDER BY abs(z_score) DESC
+LIMIT 100;
