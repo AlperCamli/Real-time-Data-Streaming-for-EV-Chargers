@@ -1,4 +1,4 @@
-# ChargeSquare EV Charging Data Pipeline
+# EV Charging Data Pipeline
 
 A Docker-first, Python-based data engineering case study for EV charging telemetry.
 
